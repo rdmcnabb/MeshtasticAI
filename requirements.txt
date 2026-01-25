@@ -1,0 +1,3 @@
+meshtastic
+pypubsub
+requests
