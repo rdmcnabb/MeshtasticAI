@@ -5,26 +5,28 @@ from pubsub import pub
 import time
 import requests
 import logging
+import os
+
+# ================= CONFIG (env vars with defaults) =================
+SERIAL_PORT = os.getenv("MESHTASTIC_SERIAL_PORT")  # None = auto-detect
+AI_PREFIX = os.getenv("AI_PREFIX", "/AI")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+# Reliability settings
+API_RETRIES = int(os.getenv("API_RETRIES", "3"))
+API_RETRY_DELAY = int(os.getenv("API_RETRY_DELAY", "2"))
+RECONNECT_DELAY = int(os.getenv("RECONNECT_DELAY", "5"))
+# ====================================================================
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
-
-# ================= CONFIG =================
-SERIAL_PORT = None          # None = auto-detect, or "/dev/ttyUSB0"
-AI_PREFIX = "/AI"
-OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-OLLAMA_MODEL = "llama3.1"
-
-# Reliability settings
-API_RETRIES = 3             # Number of retry attempts for Ollama API
-API_RETRY_DELAY = 2         # Seconds between retries
-RECONNECT_DELAY = 5         # Seconds to wait before reconnecting
-# ==========================================
 
 
 def query_ollama(question, retries=API_RETRIES):
