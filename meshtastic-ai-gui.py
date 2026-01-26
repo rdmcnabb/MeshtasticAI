@@ -1,12 +1,78 @@
 #!/usr/bin/env python3
-import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
-import meshtastic
-import meshtastic.serial_interface
-from pubsub import pub
-import threading
-import requests
+import sys
 import os
+
+# ================= CHECK FOR REQUIRED LIBRARIES =================
+# This section checks if all required libraries are installed
+# before the program tries to use them.
+
+missing_libraries = []
+
+try:
+    import tkinter as tk
+    from tkinter import ttk, scrolledtext, messagebox
+except ImportError:
+    missing_libraries.append(("tkinter", "python3-tk"))
+
+try:
+    import meshtastic
+    import meshtastic.serial_interface
+except ImportError:
+    missing_libraries.append(("meshtastic", "meshtastic"))
+
+try:
+    from pubsub import pub
+except ImportError:
+    missing_libraries.append(("pubsub", "pypubsub"))
+
+try:
+    import requests
+except ImportError:
+    missing_libraries.append(("requests", "requests"))
+
+if missing_libraries:
+    print("\n" + "=" * 60)
+    print("  MISSING REQUIRED LIBRARIES")
+    print("=" * 60)
+    print("\nThis program needs some additional libraries to run.")
+    print("Don't worry - they're easy to install!\n")
+    print("Missing libraries:")
+    for name, package in missing_libraries:
+        print(f"  - {name}")
+    print("\n" + "-" * 60)
+    print("HOW TO INSTALL:")
+    print("-" * 60)
+
+    # Get just the pip package names (excluding tkinter which is special)
+    pip_packages = [pkg for name, pkg in missing_libraries if pkg != "python3-tk"]
+    has_tkinter_missing = any(pkg == "python3-tk" for _, pkg in missing_libraries)
+
+    if pip_packages:
+        print("\nStep 1: Open a terminal and run this command:\n")
+        print(f"    pip install {' '.join(pip_packages)}")
+        print("\n    Or if that doesn't work, try:")
+        print(f"    pip3 install {' '.join(pip_packages)}")
+        print(f"\n    Or on some systems:")
+        print(f"    python3 -m pip install {' '.join(pip_packages)}")
+
+    if has_tkinter_missing:
+        print("\nFor tkinter (the graphical interface library):")
+        print("\n  On Ubuntu/Debian Linux:")
+        print("    sudo apt install python3-tk")
+        print("\n  On Fedora Linux:")
+        print("    sudo dnf install python3-tkinter")
+        print("\n  On macOS (with Homebrew):")
+        print("    brew install python-tk")
+
+    print("\n" + "-" * 60)
+    print("After installing, run this program again!")
+    print("=" * 60 + "\n")
+    sys.exit(1)
+
+# ================================================================
+
+# Standard library imports (these come with Python)
+import threading
 import json
 import glob
 from datetime import datetime
@@ -285,12 +351,15 @@ class MeshtasticAIGui:
         text_widget.see(tk.END)
         text_widget.config(state=tk.DISABLED)
 
-    def _update_status(self, running):
+    def _update_status(self, running, port=None):
         """Update the status indicator."""
         self.running = running
         if running:
             self.status_indicator.itemconfig(self.status_circle, fill="green")
-            self.status_label.config(text="Listening")
+            if port:
+                self.status_label.config(text=f"Listening on port: {port}")
+            else:
+                self.status_label.config(text="Listening")
         else:
             self.status_indicator.itemconfig(self.status_circle, fill="red")
             self.status_label.config(text="Stopped")
@@ -634,8 +703,10 @@ class MeshtasticAIGui:
             self.interface = meshtastic.serial_interface.SerialInterface(
                 devPath=dev_path
             )
-            self._update_status(True)
-            self._log_received("Service started - Connected to Meshtastic")
+            # Get the actual port used (from config or auto-detected)
+            actual_port = self.interface.devPath if hasattr(self.interface, 'devPath') else dev_path
+            self._update_status(True, actual_port)
+            self._log_received(f"Service started - Connected to Meshtastic on {actual_port}")
             # Clear and refresh node list
             self.root.after(1000, self._refresh_nodes)
             # Start refresh timer
