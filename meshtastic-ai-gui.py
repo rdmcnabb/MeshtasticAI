@@ -369,10 +369,6 @@ class MeshtasticAIGui:
         from_id = packet.get("fromId", "unknown")
         channel = packet.get("channel", 0)
 
-        # Ignore messages from our own radio (echo)
-        if self.my_node_id and from_id == self.my_node_id:
-            return
-
         self._log_received(f"From {from_id} (ch {channel}): {text}")
 
         # Check if it's an AI query
