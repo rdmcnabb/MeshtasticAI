@@ -63,7 +63,9 @@ class MeshtasticAIGui:
 
         self.status_indicator = tk.Canvas(status_frame, width=20, height=20)
         self.status_indicator.pack(side=tk.LEFT, padx=5)
-        self.status_circle = self.status_indicator.create_oval(2, 2, 18, 18, fill="red")
+        self.status_circle = self.status_indicator.create_oval(
+            2, 2, 18, 18, fill="red"
+        )
 
         self.status_label = ttk.Label(status_frame, text="Stopped")
         self.status_label.pack(side=tk.LEFT)
@@ -112,14 +114,18 @@ class MeshtasticAIGui:
         received_frame = ttk.LabelFrame(main_pane, text="Messages Received")
         main_pane.add(received_frame, weight=1)
 
-        self.received_text = scrolledtext.ScrolledText(received_frame, height=8, state=tk.DISABLED)
+        self.received_text = scrolledtext.ScrolledText(
+            received_frame, height=8, state=tk.DISABLED
+        )
         self.received_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         # Section 2: Replies Sent
         replies_frame = ttk.LabelFrame(main_pane, text="Replies Sent")
         main_pane.add(replies_frame, weight=1)
 
-        self.replies_text = scrolledtext.ScrolledText(replies_frame, height=8, state=tk.DISABLED)
+        self.replies_text = scrolledtext.ScrolledText(
+            replies_frame, height=8, state=tk.DISABLED
+        )
         self.replies_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         # Section 3: Send Message
@@ -132,7 +138,10 @@ class MeshtasticAIGui:
 
         ttk.Label(channel_frame, text="Channel:").pack(side=tk.LEFT)
         self.channel_var = tk.StringVar(value="0")
-        self.channel_spinbox = ttk.Spinbox(channel_frame, from_=0, to=7, width=5, textvariable=self.channel_var)
+        self.channel_spinbox = ttk.Spinbox(
+            channel_frame, from_=0, to=7, width=5,
+            textvariable=self.channel_var
+        )
         self.channel_spinbox.pack(side=tk.LEFT, padx=5)
 
         # Message input
@@ -140,7 +149,9 @@ class MeshtasticAIGui:
         self.message_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         # Send button
-        self.send_button = ttk.Button(send_frame, text="Send Message", command=self.send_message)
+        self.send_button = ttk.Button(
+            send_frame, text="Send Message", command=self.send_message
+        )
         self.send_button.pack(pady=5)
 
     def _log_received(self, message):
@@ -201,18 +212,23 @@ class MeshtasticAIGui:
 
             for node_id, node_info in nodes.items():
                 user = node_info.get("user", {})
-                name = user.get("longName") or user.get("shortName") or "Unknown"
+                long_name = user.get("longName")
+                short_name = user.get("shortName")
+                name = long_name or short_name or "Unknown"
                 snr = node_info.get("snr", "N/A")
                 if snr != "N/A":
                     snr = f"{snr:.1f}" if isinstance(snr, float) else str(snr)
                 last_heard = node_info.get("lastHeard")
 
                 if last_heard:
-                    last_seen = datetime.fromtimestamp(last_heard).strftime("%H:%M:%S")
+                    dt = datetime.fromtimestamp(last_heard)
+                    last_seen = dt.strftime("%H:%M:%S")
                 else:
                     last_seen = "N/A"
 
-                self.node_tree.insert("", tk.END, values=(node_id, name, snr, last_seen))
+                self.node_tree.insert(
+                    "", tk.END, values=(node_id, name, snr, last_seen)
+                )
         except Exception as e:
             print(f"Node update error: {e}")
 
@@ -239,9 +255,11 @@ class MeshtasticAIGui:
             question = text[len(AI_PREFIX):].strip()
             if question:
                 # Process in a thread to not block UI
-                threading.Thread(target=self._process_ai_query,
-                               args=(question, from_id, channel, interface),
-                               daemon=True).start()
+                threading.Thread(
+                    target=self._process_ai_query,
+                    args=(question, from_id, channel, interface),
+                    daemon=True
+                ).start()
 
     def _process_ai_query(self, question, from_id, channel, interface):
         """Process an AI query and send response."""
@@ -264,7 +282,7 @@ class MeshtasticAIGui:
         now = datetime.now()
         current_time = now.strftime("%Y-%m-%d %H:%M:%S")
         current_day = now.strftime("%A")
-        system_context = f"Current date and time: {current_day}, {current_time}."
+        system_context = f"Date and time: {current_day}, {current_time}."
 
         last_error = None
         for attempt in range(API_RETRIES):
@@ -273,14 +291,18 @@ class MeshtasticAIGui:
                     OLLAMA_URL,
                     json={
                         "model": OLLAMA_MODEL,
-                        "prompt": f"{system_context} Answer very concisely in under 120 characters: {question}",
+                        "prompt": (
+                            f"{system_context} Answer concisely "
+                            f"in under 120 chars: {question}"
+                        ),
                         "stream": False,
                         "options": {"temperature": 0.7}
                     },
                     timeout=90
                 )
                 response.raise_for_status()
-                return response.json().get("response", "").strip() or "No response."
+                result = response.json().get("response", "").strip()
+                return result or "No response."
             except Exception as e:
                 last_error = e
                 if attempt < API_RETRIES - 1:
@@ -295,9 +317,11 @@ class MeshtasticAIGui:
             return
 
         try:
-            self.interface = meshtastic.serial_interface.SerialInterface(devPath=SERIAL_PORT)
+            self.interface = meshtastic.serial_interface.SerialInterface(
+                devPath=SERIAL_PORT
+            )
             self._update_status(True)
-            self._log_received("Service started - Connected to Meshtastic device")
+            self._log_received("Service started - Connected to Meshtastic")
             # Load initial node list
             self.root.after(1000, self._update_node_list)
         except Exception as e:
@@ -325,7 +349,9 @@ class MeshtasticAIGui:
     def send_message(self):
         """Send a message to the mesh network."""
         if not self.running or not self.interface:
-            messagebox.showwarning("Warning", "Service is not running. Start the service first.")
+            messagebox.showwarning(
+                "Warning", "Service is not running. Start it first."
+            )
             return
 
         message = self.message_text.get("1.0", tk.END).strip()

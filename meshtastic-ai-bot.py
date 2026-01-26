@@ -45,18 +45,25 @@ def query_ollama(question, retries=API_RETRIES):
                 OLLAMA_URL,
                 json={
                     "model": OLLAMA_MODEL,
-                    "prompt": f"{system_context} Answer very concisely in under 120 characters: {question}",
+                    "prompt": (
+                        f"{system_context} Answer concisely "
+                        f"in under 120 chars: {question}"
+                    ),
                     "stream": False,
                     "options": {"temperature": 0.7}
                 },
                 timeout=90
             )
             response.raise_for_status()
-            return response.json().get("response", "").strip() or "No response."
+            result = response.json().get("response", "").strip()
+            return result or "No response."
         except Exception as e:
             last_error = e
             if attempt < retries - 1:
-                logger.warning(f"Ollama API attempt {attempt + 1} failed: {e}. Retrying in {API_RETRY_DELAY}s...")
+                logger.warning(
+                    f"Ollama API attempt {attempt + 1} failed: {e}. "
+                    f"Retrying in {API_RETRY_DELAY}s..."
+                )
                 time.sleep(API_RETRY_DELAY)
     return f"Error: {str(last_error)[:60]}"
 
@@ -76,7 +83,7 @@ def on_receive(packet, interface):
     from_id = packet.get("fromId", "unknown")
     incoming_channel = packet.get("channel", 0)   # 0 is primary if missing
 
-    logger.info(f"Received from {from_id} on channel {incoming_channel}: {text}")
+    logger.info(f"Received from {from_id} on ch {incoming_channel}: {text}")
 
     if not text.upper().startswith(AI_PREFIX.upper()):
         return
@@ -96,7 +103,8 @@ def on_receive(packet, interface):
     if len(reply.encode('utf-8')) > max_bytes:
         reply = f"@{from_id} {answer[:100]}..."
 
-    logger.debug(f"Preparing to send on channel {incoming_channel} ({len(reply.encode('utf-8'))} bytes): {reply}")
+    reply_bytes = len(reply.encode('utf-8'))
+    logger.debug(f"Send ch {incoming_channel} ({reply_bytes}B): {reply}")
 
     try:
         interface.sendText(
@@ -110,10 +118,13 @@ def on_receive(packet, interface):
         logger.error(f"Send failed on channel {incoming_channel}: {e}")
         # NO FALLBACK HERE – we want to know if it fails
 
+
 def connect_interface():
     """Connect to Meshtastic device with error handling."""
     try:
-        interface = meshtastic.serial_interface.SerialInterface(devPath=SERIAL_PORT)
+        interface = meshtastic.serial_interface.SerialInterface(
+            devPath=SERIAL_PORT
+        )
         logger.info("Connected to Meshtastic device")
         return interface
     except Exception as e:
@@ -135,7 +146,7 @@ def main():
             if interface is None:
                 interface = connect_interface()
                 if interface is None:
-                    logger.warning(f"Retrying connection in {RECONNECT_DELAY}s...")
+                    logger.warning(f"Retry in {RECONNECT_DELAY}s...")
                     time.sleep(RECONNECT_DELAY)
                     continue
                 logger.info("Listening for messages... (Ctrl+C to exit)")
@@ -147,7 +158,7 @@ def main():
                 logger.error(f"Connection lost: {e}")
                 try:
                     interface.close()
-                except:
+                except Exception:
                     pass
                 interface = None
                 logger.warning(f"Reconnecting in {RECONNECT_DELAY}s...")
@@ -158,6 +169,7 @@ def main():
     finally:
         if interface:
             interface.close()
+
 
 if __name__ == "__main__":
     main()
