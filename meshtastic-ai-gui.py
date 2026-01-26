@@ -164,8 +164,8 @@ class MeshtasticAIGui:
         )
         self.received_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Section 2: Replies Sent
-        replies_frame = ttk.LabelFrame(main_pane, text="Replies Sent")
+        # Section 2: Messages Sent
+        replies_frame = ttk.LabelFrame(main_pane, text="Messages Sent")
         main_pane.add(replies_frame, weight=1)
 
         self.replies_text = scrolledtext.ScrolledText(
@@ -182,7 +182,7 @@ class MeshtasticAIGui:
         channel_frame.pack(fill=tk.X, padx=5, pady=2)
 
         ttk.Label(channel_frame, text="Channel:").pack(side=tk.LEFT)
-        self.channel_var = tk.StringVar(value="0")
+        self.channel_var = tk.StringVar(value="1")
         self.channel_spinbox = ttk.Spinbox(
             channel_frame, from_=0, to=7, width=5,
             textvariable=self.channel_var
@@ -487,9 +487,25 @@ class MeshtasticAIGui:
 
         try:
             channel = int(self.channel_var.get())
+            # Get our own node ID
+            my_info = self.interface.getMyNodeInfo()
+            my_id = my_info.get("user", {}).get("id", "local") if my_info else "local"
+
             self.interface.sendText(text=message, channelIndex=channel)
             self._log_reply(f"Sent (ch {channel}): {message}")
+            # Also show in Messages Received so we see the full conversation
+            self._log_received(f"From {my_id} (ch {channel}): {message}")
             self.message_text.delete("1.0", tk.END)
+
+            # Check if local message is an AI query and process it
+            if message.upper().startswith(AI_PREFIX.upper()):
+                question = message[len(AI_PREFIX):].strip()
+                if question:
+                    threading.Thread(
+                        target=self._process_ai_query,
+                        args=(question, my_id, channel, self.interface),
+                        daemon=True
+                    ).start()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to send: {e}")
 
