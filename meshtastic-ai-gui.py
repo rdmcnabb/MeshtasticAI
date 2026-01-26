@@ -248,6 +248,24 @@ class MeshtasticAIGui:
         tools_menu.add_separator()
         tools_menu.add_command(label="Settings", command=self._open_settings)
 
+        # Help menu
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="About", command=self._show_about)
+
+    def _show_about(self):
+        """Show the About dialog."""
+        about_text = (
+            "Meshtastic AI Bot\n\n"
+            "A GUI for Meshtastic mesh networking\n"
+            "with Ollama AI integration.\n\n"
+            "Developed by Ronald D. McNabb\n"
+            "with Claude Opus 4.5 (Anthropic)\n"
+            "and Grok 4 (xAI)\n\n"
+            "Powered by Meshtastic and Ollama"
+        )
+        messagebox.showinfo("About", about_text)
+
     def _create_status_bar(self):
         """Create the status bar at the bottom."""
         status_frame = ttk.Frame(self.root)
