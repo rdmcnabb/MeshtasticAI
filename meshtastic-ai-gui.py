@@ -25,11 +25,13 @@ class MeshtasticAIGui:
     def __init__(self, root):
         self.root = root
         self.root.title("Meshtastic AI Bot")
-        self.root.geometry("800x600")
+        self.root.geometry("800x750")
 
         self.interface = None
         self.running = False
         self.listener_thread = None
+        self.nodes = {}  # Track discovered nodes
+        self.node_update_pending = False  # Throttle node updates
 
         self._create_menu()
         self._create_status_bar()
@@ -37,6 +39,7 @@ class MeshtasticAIGui:
 
         # Subscribe to meshtastic events
         pub.subscribe(self._on_receive, "meshtastic.receive")
+        pub.subscribe(self._on_node_update, "meshtastic.node.updated")
 
     def _create_menu(self):
         """Create the menu bar."""
@@ -66,10 +69,44 @@ class MeshtasticAIGui:
         self.status_label.pack(side=tk.LEFT)
 
     def _create_main_sections(self):
-        """Create the three main sections."""
+        """Create the four main sections."""
         # Main container with paned windows for resizable sections
         main_pane = ttk.PanedWindow(self.root, orient=tk.VERTICAL)
         main_pane.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Section 0: Node List (top section)
+        nodes_frame = ttk.LabelFrame(main_pane, text="Nodes")
+        main_pane.add(nodes_frame, weight=1)
+
+        # Create treeview for nodes with scrollbar
+        node_container = ttk.Frame(nodes_frame)
+        node_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Scrollbar
+        node_scrollbar = ttk.Scrollbar(node_container)
+        node_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Treeview with columns
+        self.node_tree = ttk.Treeview(
+            node_container,
+            columns=("id", "name", "snr", "last_seen"),
+            show="headings",
+            height=6,
+            yscrollcommand=node_scrollbar.set
+        )
+        self.node_tree.pack(fill=tk.BOTH, expand=True)
+        node_scrollbar.config(command=self.node_tree.yview)
+
+        # Define columns
+        self.node_tree.heading("id", text="Node ID")
+        self.node_tree.heading("name", text="Name")
+        self.node_tree.heading("snr", text="SNR")
+        self.node_tree.heading("last_seen", text="Last Seen")
+
+        self.node_tree.column("id", width=100)
+        self.node_tree.column("name", width=150)
+        self.node_tree.column("snr", width=60)
+        self.node_tree.column("last_seen", width=100)
 
         # Section 1: Messages Received
         received_frame = ttk.LabelFrame(main_pane, text="Messages Received")
@@ -131,6 +168,53 @@ class MeshtasticAIGui:
         else:
             self.status_indicator.itemconfig(self.status_circle, fill="red")
             self.status_label.config(text="Stopped")
+
+    def _on_node_update(self, node, interface):
+        """Handle node updates from meshtastic."""
+        # Throttle updates to prevent crashes
+        if not self.node_update_pending:
+            self.node_update_pending = True
+            self.root.after(500, self._do_node_update)
+
+    def _do_node_update(self):
+        """Actually perform the node list update."""
+        self.node_update_pending = False
+        self._update_node_list()
+
+    def _update_node_list(self):
+        """Refresh the node list from the interface."""
+        if not self.interface or not self.running:
+            return
+
+        try:
+            # Get nodes from interface
+            nodes = self.interface.nodes
+            if not nodes:
+                return
+
+            # Get current items
+            existing = set(self.node_tree.get_children())
+
+            # Clear and repopulate
+            for item in existing:
+                self.node_tree.delete(item)
+
+            for node_id, node_info in nodes.items():
+                user = node_info.get("user", {})
+                name = user.get("longName") or user.get("shortName") or "Unknown"
+                snr = node_info.get("snr", "N/A")
+                if snr != "N/A":
+                    snr = f"{snr:.1f}" if isinstance(snr, float) else str(snr)
+                last_heard = node_info.get("lastHeard")
+
+                if last_heard:
+                    last_seen = datetime.fromtimestamp(last_heard).strftime("%H:%M:%S")
+                else:
+                    last_seen = "N/A"
+
+                self.node_tree.insert("", tk.END, values=(node_id, name, snr, last_seen))
+        except Exception as e:
+            print(f"Node update error: {e}")
 
     def _on_receive(self, packet, interface):
         """Handle received messages."""
@@ -214,6 +298,8 @@ class MeshtasticAIGui:
             self.interface = meshtastic.serial_interface.SerialInterface(devPath=SERIAL_PORT)
             self._update_status(True)
             self._log_received("Service started - Connected to Meshtastic device")
+            # Load initial node list
+            self.root.after(1000, self._update_node_list)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to connect: {e}")
             self._update_status(False)
@@ -230,6 +316,9 @@ class MeshtasticAIGui:
                 self.interface = None
             self._update_status(False)
             self._log_received("Service stopped")
+            # Clear node list
+            for item in self.node_tree.get_children():
+                self.node_tree.delete(item)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to stop: {e}")
 
