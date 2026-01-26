@@ -6,6 +6,7 @@ import time
 import requests
 import logging
 import os
+from datetime import datetime
 
 # ================= CONFIG (env vars with defaults) =================
 SERIAL_PORT = os.getenv("MESHTASTIC_SERIAL_PORT")  # None = auto-detect
@@ -31,6 +32,12 @@ logger = logging.getLogger(__name__)
 
 def query_ollama(question, retries=API_RETRIES):
     """Query Ollama API with retry logic."""
+    now = datetime.now()
+    current_time = now.strftime("%Y-%m-%d %H:%M:%S")
+    current_day = now.strftime("%A")
+
+    system_context = f"Current date and time: {current_day}, {current_time}."
+
     last_error = None
     for attempt in range(retries):
         try:
@@ -38,7 +45,7 @@ def query_ollama(question, retries=API_RETRIES):
                 OLLAMA_URL,
                 json={
                     "model": OLLAMA_MODEL,
-                    "prompt": f"Answer very concisely in under 120 characters: {question}",
+                    "prompt": f"{system_context} Answer very concisely in under 120 characters: {question}",
                     "stream": False,
                     "options": {"temperature": 0.7}
                 },
