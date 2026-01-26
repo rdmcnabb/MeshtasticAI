@@ -23,7 +23,7 @@ API_RETRY_DELAY = int(os.getenv("API_RETRY_DELAY", "2"))
 # ================= COLOR THEMES =================
 THEMES = {
     "Classic": {
-        "bg": "SystemButtonFace",
+        "bg": "#d9d9d9",
         "fg": "black",
         "text_bg": "white",
         "text_fg": "black",
@@ -56,6 +56,8 @@ class MeshtasticAIGui:
         self.nodes = {}  # Track discovered nodes
         self.node_update_pending = False  # Throttle node updates
         self.current_theme = "Classic"
+        self.refresh_timer_id = None
+        self.refresh_interval = 30000  # 30 seconds
 
         self._create_menu()
         self._create_status_bar()
@@ -89,6 +91,13 @@ class MeshtasticAIGui:
                 label=theme_name,
                 command=lambda t=theme_name: self._apply_theme(t)
             )
+
+        # Tools menu
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Tools", menu=tools_menu)
+        tools_menu.add_command(
+            label="Refresh Nodes", command=self._refresh_nodes
+        )
 
     def _create_status_bar(self):
         """Create the status bar at the bottom."""
@@ -312,6 +321,44 @@ class MeshtasticAIGui:
         except Exception as e:
             print(f"Node update error: {e}")
 
+    def _refresh_nodes(self):
+        """Clear and refresh the node list."""
+        if not self.interface or not self.running:
+            return
+
+        # Clear existing nodes from treeview
+        for item in self.node_tree.get_children():
+            self.node_tree.delete(item)
+
+        # Request fresh node info from device
+        try:
+            self.interface.nodes.clear()
+            self.interface.requestNodes()
+        except Exception as e:
+            print(f"Node refresh error: {e}")
+
+        # Schedule update after giving time for responses
+        self.root.after(2000, self._update_node_list)
+
+    def _start_refresh_timer(self):
+        """Start the automatic node refresh timer."""
+        self._stop_refresh_timer()
+        self.refresh_timer_id = self.root.after(
+            self.refresh_interval, self._on_refresh_timer
+        )
+
+    def _stop_refresh_timer(self):
+        """Stop the automatic node refresh timer."""
+        if self.refresh_timer_id:
+            self.root.after_cancel(self.refresh_timer_id)
+            self.refresh_timer_id = None
+
+    def _on_refresh_timer(self):
+        """Handle refresh timer tick."""
+        if self.running:
+            self._update_node_list()
+            self._start_refresh_timer()
+
     def _on_receive(self, packet, interface):
         """Handle received messages."""
         if "decoded" not in packet:
@@ -403,8 +450,10 @@ class MeshtasticAIGui:
             )
             self._update_status(True)
             self._log_received("Service started - Connected to Meshtastic")
-            # Load initial node list
-            self.root.after(1000, self._update_node_list)
+            # Clear and refresh node list
+            self.root.after(1000, self._refresh_nodes)
+            # Start refresh timer
+            self._start_refresh_timer()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to connect: {e}")
             self._update_status(False)
@@ -414,6 +463,9 @@ class MeshtasticAIGui:
         if not self.running:
             messagebox.showinfo("Info", "Service is not running")
             return
+
+        # Stop refresh timer
+        self._stop_refresh_timer()
 
         try:
             if self.interface:
