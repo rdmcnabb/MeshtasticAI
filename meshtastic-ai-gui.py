@@ -7,18 +7,60 @@ from pubsub import pub
 import threading
 import requests
 import os
+import json
+import glob
 from datetime import datetime
 
-# ================= CONFIG (env vars with defaults) =================
-SERIAL_PORT = os.getenv("MESHTASTIC_SERIAL_PORT")
-AI_PREFIX = os.getenv("AI_PREFIX", "/AI")
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
+# ================= CONFIG FILE =================
+CONFIG_FILE = os.path.expanduser("~/.meshtastic-ai-config.json")
 
-# Reliability settings
-API_RETRIES = int(os.getenv("API_RETRIES", "3"))
-API_RETRY_DELAY = int(os.getenv("API_RETRY_DELAY", "2"))
-# ====================================================================
+DEFAULT_CONFIG = {
+    "serial_port": "",  # Empty = auto-detect
+    "ai_prefix": "/AI",
+    "ollama_url": "http://127.0.0.1:11434/api/generate",
+    "ollama_model": "llama3.1",
+    "api_retries": 3,
+    "api_retry_delay": 2,
+    "default_channel": 1,
+}
+
+
+def load_config():
+    """Load configuration from file or return defaults."""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                config = json.load(f)
+                # Merge with defaults for any missing keys
+                for key, value in DEFAULT_CONFIG.items():
+                    if key not in config:
+                        config[key] = value
+                return config
+        except Exception:
+            pass
+    return DEFAULT_CONFIG.copy()
+
+
+def save_config(config):
+    """Save configuration to file."""
+    try:
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(config, f, indent=2)
+        return True
+    except Exception as e:
+        print(f"Failed to save config: {e}")
+        return False
+
+
+def detect_serial_ports():
+    """Detect available serial ports."""
+    ports = []
+    # Common patterns for Meshtastic devices
+    patterns = ["/dev/ttyUSB*", "/dev/ttyACM*", "/dev/cu.usbserial*", "/dev/cu.usbmodem*"]
+    for pattern in patterns:
+        ports.extend(glob.glob(pattern))
+    return sorted(ports)
+# ===============================================
 
 # ================= COLOR THEMES =================
 THEMES = {
@@ -49,6 +91,9 @@ class MeshtasticAIGui:
         self.root = root
         self.root.title("Meshtastic AI Bot")
         self.root.geometry("800x750")
+
+        # Load configuration
+        self.config = load_config()
 
         self.interface = None
         self.running = False
@@ -99,6 +144,8 @@ class MeshtasticAIGui:
         tools_menu.add_command(
             label="Refresh Nodes", command=self._refresh_nodes
         )
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Settings", command=self._open_settings)
 
     def _create_status_bar(self):
         """Create the status bar at the bottom."""
@@ -198,7 +245,7 @@ class MeshtasticAIGui:
         channel_frame.pack(fill=tk.X, padx=5, pady=2)
 
         ttk.Label(channel_frame, text="Channel:").pack(side=tk.LEFT)
-        self.channel_var = tk.StringVar(value="1")
+        self.channel_var = tk.StringVar(value=str(self.config.get("default_channel", 1)))
         self.channel_spinbox = ttk.Spinbox(
             channel_frame, from_=0, to=7, width=5,
             textvariable=self.channel_var
@@ -414,8 +461,9 @@ class MeshtasticAIGui:
         self._log_received(f"From {from_id} (ch {channel}): {text}")
 
         # Check if it's an AI query
-        if text.upper().startswith(AI_PREFIX.upper()):
-            question = text[len(AI_PREFIX):].strip()
+        ai_prefix = self.config.get("ai_prefix", "/AI")
+        if text.upper().startswith(ai_prefix.upper()):
+            question = text[len(ai_prefix):].strip()
             if question:
                 # Process in a thread to not block UI
                 threading.Thread(
@@ -448,13 +496,18 @@ class MeshtasticAIGui:
         current_day = now.strftime("%A")
         system_context = f"Date and time: {current_day}, {current_time}."
 
+        api_retries = self.config.get("api_retries", 3)
+        api_retry_delay = self.config.get("api_retry_delay", 2)
+        ollama_url = self.config.get("ollama_url", DEFAULT_CONFIG["ollama_url"])
+        ollama_model = self.config.get("ollama_model", DEFAULT_CONFIG["ollama_model"])
+
         last_error = None
-        for attempt in range(API_RETRIES):
+        for attempt in range(api_retries):
             try:
                 response = requests.post(
-                    OLLAMA_URL,
+                    ollama_url,
                     json={
-                        "model": OLLAMA_MODEL,
+                        "model": ollama_model,
                         "prompt": (
                             f"{system_context} Answer concisely "
                             f"in under 120 chars: {question}"
@@ -469,10 +522,104 @@ class MeshtasticAIGui:
                 return result or "No response."
             except Exception as e:
                 last_error = e
-                if attempt < API_RETRIES - 1:
+                if attempt < api_retries - 1:
                     import time
-                    time.sleep(API_RETRY_DELAY)
+                    time.sleep(api_retry_delay)
         return f"Error: {str(last_error)[:60]}"
+
+    def _open_settings(self):
+        """Open the settings dialog."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Settings")
+        dialog.geometry("500x350")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Create form
+        frame = ttk.Frame(dialog, padding=10)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        row = 0
+
+        # Serial Port
+        ttk.Label(frame, text="Serial Port:").grid(row=row, column=0, sticky="w", pady=5)
+        port_frame = ttk.Frame(frame)
+        port_frame.grid(row=row, column=1, sticky="ew", pady=5)
+
+        port_var = tk.StringVar(value=self.config.get("serial_port", ""))
+        port_combo = ttk.Combobox(port_frame, textvariable=port_var, width=25)
+        port_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        def refresh_ports():
+            ports = detect_serial_ports()
+            port_combo["values"] = ["(Auto-detect)"] + ports
+        refresh_ports()
+
+        ttk.Button(port_frame, text="Refresh", command=refresh_ports, width=8).pack(side=tk.LEFT, padx=5)
+
+        row += 1
+
+        # Ollama URL
+        ttk.Label(frame, text="Ollama URL:").grid(row=row, column=0, sticky="w", pady=5)
+        url_var = tk.StringVar(value=self.config.get("ollama_url", DEFAULT_CONFIG["ollama_url"]))
+        ttk.Entry(frame, textvariable=url_var, width=40).grid(row=row, column=1, sticky="ew", pady=5)
+
+        row += 1
+
+        # Ollama Model
+        ttk.Label(frame, text="Ollama Model:").grid(row=row, column=0, sticky="w", pady=5)
+        model_var = tk.StringVar(value=self.config.get("ollama_model", DEFAULT_CONFIG["ollama_model"]))
+        ttk.Entry(frame, textvariable=model_var, width=40).grid(row=row, column=1, sticky="ew", pady=5)
+
+        row += 1
+
+        # AI Prefix
+        ttk.Label(frame, text="AI Prefix:").grid(row=row, column=0, sticky="w", pady=5)
+        prefix_var = tk.StringVar(value=self.config.get("ai_prefix", DEFAULT_CONFIG["ai_prefix"]))
+        ttk.Entry(frame, textvariable=prefix_var, width=40).grid(row=row, column=1, sticky="ew", pady=5)
+
+        row += 1
+
+        # Default Channel
+        ttk.Label(frame, text="Default Channel:").grid(row=row, column=0, sticky="w", pady=5)
+        channel_var = tk.StringVar(value=str(self.config.get("default_channel", 1)))
+        ttk.Spinbox(frame, from_=0, to=7, textvariable=channel_var, width=5).grid(row=row, column=1, sticky="w", pady=5)
+
+        row += 1
+
+        # API Retries
+        ttk.Label(frame, text="API Retries:").grid(row=row, column=0, sticky="w", pady=5)
+        retries_var = tk.StringVar(value=str(self.config.get("api_retries", 3)))
+        ttk.Spinbox(frame, from_=1, to=10, textvariable=retries_var, width=5).grid(row=row, column=1, sticky="w", pady=5)
+
+        row += 1
+
+        frame.columnconfigure(1, weight=1)
+
+        # Buttons
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        def save_settings():
+            port_value = port_var.get()
+            if port_value == "(Auto-detect)":
+                port_value = ""
+
+            self.config["serial_port"] = port_value
+            self.config["ollama_url"] = url_var.get()
+            self.config["ollama_model"] = model_var.get()
+            self.config["ai_prefix"] = prefix_var.get()
+            self.config["default_channel"] = int(channel_var.get())
+            self.config["api_retries"] = int(retries_var.get())
+
+            if save_config(self.config):
+                messagebox.showinfo("Settings", "Settings saved successfully!")
+                dialog.destroy()
+            else:
+                messagebox.showerror("Error", "Failed to save settings")
+
+        ttk.Button(button_frame, text="Save", command=save_settings).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
 
     def start_service(self):
         """Start the Meshtastic listener service."""
@@ -481,8 +628,11 @@ class MeshtasticAIGui:
             return
 
         try:
+            serial_port = self.config.get("serial_port", "")
+            # Empty string means auto-detect
+            dev_path = serial_port if serial_port else None
             self.interface = meshtastic.serial_interface.SerialInterface(
-                devPath=SERIAL_PORT
+                devPath=dev_path
             )
             self._update_status(True)
             self._log_received("Service started - Connected to Meshtastic")
@@ -552,8 +702,9 @@ class MeshtasticAIGui:
             self.message_text.delete("1.0", tk.END)
 
             # Check if local message is an AI query and process it
-            if message.upper().startswith(AI_PREFIX.upper()):
-                question = message[len(AI_PREFIX):].strip()
+            ai_prefix = self.config.get("ai_prefix", "/AI")
+            if message.upper().startswith(ai_prefix.upper()):
+                question = message[len(ai_prefix):].strip()
                 if question:
                     threading.Thread(
                         target=self._process_ai_query,
