@@ -20,6 +20,29 @@ API_RETRIES = int(os.getenv("API_RETRIES", "3"))
 API_RETRY_DELAY = int(os.getenv("API_RETRY_DELAY", "2"))
 # ====================================================================
 
+# ================= COLOR THEMES =================
+THEMES = {
+    "Classic": {
+        "bg": "SystemButtonFace",
+        "fg": "black",
+        "text_bg": "white",
+        "text_fg": "black",
+        "ai_color": "blue",
+        "tree_bg": "white",
+        "tree_fg": "black",
+    },
+    "Matrix": {
+        "bg": "black",
+        "fg": "#00ff00",
+        "text_bg": "black",
+        "text_fg": "#00ff00",
+        "ai_color": "#ff0000",
+        "tree_bg": "black",
+        "tree_fg": "#00ff00",
+    },
+}
+# ================================================
+
 
 class MeshtasticAIGui:
     def __init__(self, root):
@@ -32,6 +55,7 @@ class MeshtasticAIGui:
         self.listener_thread = None
         self.nodes = {}  # Track discovered nodes
         self.node_update_pending = False  # Throttle node updates
+        self.current_theme = "Classic"
 
         self._create_menu()
         self._create_status_bar()
@@ -53,6 +77,15 @@ class MeshtasticAIGui:
         service_menu.add_command(label="Stop", command=self.stop_service)
         service_menu.add_separator()
         service_menu.add_command(label="Exit", command=self.on_exit)
+
+        # Theme menu
+        theme_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Theme", menu=theme_menu)
+        for theme_name in THEMES.keys():
+            theme_menu.add_command(
+                label=theme_name,
+                command=lambda t=theme_name: self._apply_theme(t)
+            )
 
     def _create_status_bar(self):
         """Create the status bar at the bottom."""
@@ -158,15 +191,21 @@ class MeshtasticAIGui:
         """Add a message to the received section."""
         self.root.after(0, self._append_to_text, self.received_text, message)
 
-    def _log_reply(self, message):
+    def _log_reply(self, message, is_ai=False):
         """Add a message to the replies section."""
-        self.root.after(0, self._append_to_text, self.replies_text, message)
+        self.root.after(
+            0, self._append_to_text, self.replies_text, message, is_ai
+        )
 
-    def _append_to_text(self, text_widget, message):
+    def _append_to_text(self, text_widget, message, is_ai=False):
         """Thread-safe append to a text widget."""
         timestamp = datetime.now().strftime("%H:%M:%S")
         text_widget.config(state=tk.NORMAL)
+        start_idx = text_widget.index(tk.END)
         text_widget.insert(tk.END, f"[{timestamp}] {message}\n")
+        if is_ai:
+            end_idx = text_widget.index(tk.END)
+            text_widget.tag_add("ai_response", start_idx, end_idx)
         text_widget.see(tk.END)
         text_widget.config(state=tk.DISABLED)
 
@@ -179,6 +218,43 @@ class MeshtasticAIGui:
         else:
             self.status_indicator.itemconfig(self.status_circle, fill="red")
             self.status_label.config(text="Stopped")
+
+    def _apply_theme(self, theme_name):
+        """Apply a color theme to the application."""
+        if theme_name not in THEMES:
+            return
+        self.current_theme = theme_name
+        theme = THEMES[theme_name]
+
+        # Root window
+        self.root.configure(bg=theme["bg"])
+
+        # Text widgets
+        for text_widget in [
+            self.received_text, self.replies_text, self.message_text
+        ]:
+            text_widget.config(
+                bg=theme["text_bg"],
+                fg=theme["text_fg"],
+                insertbackground=theme["text_fg"]
+            )
+            # Configure AI response tag
+            text_widget.tag_configure(
+                "ai_response", foreground=theme["ai_color"]
+            )
+
+        # Treeview styling
+        style = ttk.Style()
+        style.configure(
+            "Treeview",
+            background=theme["tree_bg"],
+            foreground=theme["tree_fg"],
+            fieldbackground=theme["tree_bg"]
+        )
+        style.map("Treeview", background=[("selected", "#0078d7")])
+
+        # Status indicator background
+        self.status_indicator.configure(bg=theme["bg"])
 
     def _on_node_update(self, node, interface):
         """Handle node updates from meshtastic."""
@@ -273,7 +349,8 @@ class MeshtasticAIGui:
 
         try:
             interface.sendText(text=reply, channelIndex=channel)
-            self._log_reply(f"To {from_id} (ch {channel}): {reply}")
+            msg = f"AI to {from_id} (ch {channel}): {reply}"
+            self._log_reply(msg, is_ai=True)
         except Exception as e:
             self._log_reply(f"FAILED to {from_id}: {e}")
 
