@@ -58,6 +58,7 @@ class MeshtasticAIGui:
         self.current_theme = "Classic"
         self.refresh_timer_id = None
         self.refresh_interval = 30000  # 30 seconds
+        self.selected_node_id = None  # Selected node for DM
 
         self._create_menu()
         self._create_status_bar()
@@ -155,6 +156,9 @@ class MeshtasticAIGui:
         self.node_tree.column("snr", width=60)
         self.node_tree.column("last_seen", width=100)
 
+        # Bind selection event
+        self.node_tree.bind("<<TreeviewSelect>>", self._on_node_select)
+
         # Section 1: Messages Received
         received_frame = ttk.LabelFrame(main_pane, text="Messages Received")
         main_pane.add(received_frame, weight=1)
@@ -176,6 +180,18 @@ class MeshtasticAIGui:
         # Section 3: Send Message
         send_frame = ttk.LabelFrame(main_pane, text="Send Message")
         main_pane.add(send_frame, weight=1)
+
+        # Destination selection (node from list)
+        dest_frame = ttk.Frame(send_frame)
+        dest_frame.pack(fill=tk.X, padx=5, pady=2)
+
+        ttk.Label(dest_frame, text="To:").pack(side=tk.LEFT)
+        self.dest_label = ttk.Label(dest_frame, text="All (Broadcast)")
+        self.dest_label.pack(side=tk.LEFT, padx=5)
+        self.clear_dest_button = ttk.Button(
+            dest_frame, text="Clear", command=self._clear_node_selection, width=6
+        )
+        self.clear_dest_button.pack(side=tk.LEFT, padx=5)
 
         # Channel selection
         channel_frame = ttk.Frame(send_frame)
@@ -269,6 +285,28 @@ class MeshtasticAIGui:
         # Status indicator background
         self.status_indicator.configure(bg=theme["bg"])
 
+    def _on_node_select(self, event):
+        """Handle node selection from treeview."""
+        selection = self.node_tree.selection()
+        if selection:
+            item = selection[0]
+            values = self.node_tree.item(item, "values")
+            if values:
+                node_id = values[0]
+                node_name = values[1]
+                self.selected_node_id = node_id
+                self.dest_label.config(text=f"{node_name} ({node_id})")
+        else:
+            self._clear_node_selection()
+
+    def _clear_node_selection(self):
+        """Clear node selection and return to broadcast mode."""
+        self.selected_node_id = None
+        self.dest_label.config(text="All (Broadcast)")
+        # Clear treeview selection
+        for item in self.node_tree.selection():
+            self.node_tree.selection_remove(item)
+
     def _on_node_update(self, node, interface):
         """Handle node updates from meshtastic."""
         # Throttle updates to prevent crashes
@@ -315,9 +353,14 @@ class MeshtasticAIGui:
                 else:
                     last_seen = "N/A"
 
+                # Use node_id as item id for easy reselection
                 self.node_tree.insert(
-                    "", tk.END, values=(node_id, name, snr, last_seen)
+                    "", tk.END, iid=node_id, values=(node_id, name, snr, last_seen)
                 )
+
+            # Restore selection if we had one
+            if self.selected_node_id and self.node_tree.exists(self.selected_node_id):
+                self.node_tree.selection_set(self.selected_node_id)
         except Exception as e:
             print(f"Node update error: {e}")
 
@@ -491,10 +534,21 @@ class MeshtasticAIGui:
             my_info = self.interface.getMyNodeInfo()
             my_id = my_info.get("user", {}).get("id", "local") if my_info else "local"
 
-            self.interface.sendText(text=message, channelIndex=channel)
-            self._log_reply(f"Sent (ch {channel}): {message}")
+            # Send to specific node or broadcast
+            if self.selected_node_id:
+                self.interface.sendText(
+                    text=message,
+                    channelIndex=channel,
+                    destinationId=self.selected_node_id
+                )
+                dest_str = f"to {self.selected_node_id}"
+            else:
+                self.interface.sendText(text=message, channelIndex=channel)
+                dest_str = "broadcast"
+
+            self._log_reply(f"Sent {dest_str} (ch {channel}): {message}")
             # Also show in Messages Received so we see the full conversation
-            self._log_received(f"From {my_id} (ch {channel}): {message}")
+            self._log_received(f"From {my_id} {dest_str} (ch {channel}): {message}")
             self.message_text.delete("1.0", tk.END)
 
             # Check if local message is an AI query and process it
