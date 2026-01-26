@@ -221,7 +221,8 @@ class MeshtasticAIGui:
         status_frame = ttk.Frame(self.root)
         status_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=5)
 
-        ttk.Label(status_frame, text="Status:").pack(side=tk.LEFT)
+        # Meshtastic connection status
+        ttk.Label(status_frame, text="Radio:").pack(side=tk.LEFT)
 
         self.status_indicator = tk.Canvas(status_frame, width=20, height=20)
         self.status_indicator.pack(side=tk.LEFT, padx=5)
@@ -231,6 +232,21 @@ class MeshtasticAIGui:
 
         self.status_label = ttk.Label(status_frame, text="Stopped")
         self.status_label.pack(side=tk.LEFT)
+
+        # Separator
+        ttk.Label(status_frame, text="  |  ").pack(side=tk.LEFT)
+
+        # AI service status
+        ttk.Label(status_frame, text="AI:").pack(side=tk.LEFT)
+
+        self.ai_status_indicator = tk.Canvas(status_frame, width=20, height=20)
+        self.ai_status_indicator.pack(side=tk.LEFT, padx=5)
+        self.ai_status_circle = self.ai_status_indicator.create_oval(
+            2, 2, 18, 18, fill="red"
+        )
+
+        self.ai_status_label = ttk.Label(status_frame, text="Not connected")
+        self.ai_status_label.pack(side=tk.LEFT)
 
     def _create_main_sections(self):
         """Create the four main sections."""
@@ -401,12 +417,23 @@ class MeshtasticAIGui:
         )
         style.map("Treeview", background=[("selected", "#0078d7")])
 
-        # Status indicator background
+        # Status indicator backgrounds
         self.status_indicator.configure(bg=theme["bg"])
+        self.ai_status_indicator.configure(bg=theme["bg"])
+
+    def _update_ai_status(self, connected, message=None):
+        """Update the AI status indicator."""
+        if connected:
+            self.ai_status_indicator.itemconfig(self.ai_status_circle, fill="green")
+            self.ai_status_label.config(text=message or "Ready")
+        else:
+            self.ai_status_indicator.itemconfig(self.ai_status_circle, fill="red")
+            self.ai_status_label.config(text=message or "Not connected")
 
     def _check_ollama_connection(self):
         """Check if Ollama AI service is reachable. Open Settings if not."""
         ollama_url = self.config.get("ollama_url", DEFAULT_CONFIG["ollama_url"])
+        ollama_model = self.config.get("ollama_model", DEFAULT_CONFIG["ollama_model"])
 
         # Try to connect to Ollama (just check if server responds)
         try:
@@ -415,8 +442,10 @@ class MeshtasticAIGui:
             base_url = ollama_url.rsplit('/api/', 1)[0]
             response = requests.get(base_url, timeout=5)
             # If we get here, Ollama is running
+            self._update_ai_status(True, f"Ready ({ollama_model})")
             return True
         except requests.exceptions.ConnectionError:
+            self._update_ai_status(False, "Cannot connect")
             error_msg = (
                 "Cannot connect to Ollama AI service.\n\n"
                 f"Tried to connect to:\n{ollama_url}\n\n"
@@ -426,12 +455,14 @@ class MeshtasticAIGui:
                 "Opening Settings so you can configure the connection."
             )
         except requests.exceptions.Timeout:
+            self._update_ai_status(False, "Timed out")
             error_msg = (
                 "Connection to Ollama timed out.\n\n"
                 f"URL: {ollama_url}\n\n"
                 "Opening Settings so you can check the configuration."
             )
         except Exception as e:
+            self._update_ai_status(False, "Error")
             error_msg = (
                 f"Error connecting to Ollama:\n{str(e)[:100]}\n\n"
                 "Opening Settings so you can check the configuration."
@@ -668,7 +699,7 @@ class MeshtasticAIGui:
         """Open the settings dialog."""
         dialog = tk.Toplevel(self.root)
         dialog.title("Settings")
-        dialog.geometry("500x350")
+        dialog.geometry("550x420")
         dialog.transient(self.root)
         dialog.grab_set()
 
@@ -684,7 +715,7 @@ class MeshtasticAIGui:
         port_frame.grid(row=row, column=1, sticky="ew", pady=5)
 
         port_var = tk.StringVar()
-        port_combo = ttk.Combobox(port_frame, textvariable=port_var, width=25)
+        port_combo = ttk.Combobox(port_frame, textvariable=port_var, width=20)
         port_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         def refresh_ports():
@@ -707,7 +738,42 @@ class MeshtasticAIGui:
 
         refresh_ports()
 
-        ttk.Button(port_frame, text="Refresh", command=refresh_ports, width=8).pack(side=tk.LEFT, padx=5)
+        ttk.Button(port_frame, text="Refresh", command=refresh_ports, width=7).pack(side=tk.LEFT, padx=2)
+
+        # Port test button and status light
+        port_status_canvas = tk.Canvas(port_frame, width=16, height=16)
+        port_status_canvas.pack(side=tk.LEFT, padx=5)
+        port_status_circle = port_status_canvas.create_oval(2, 2, 14, 14, fill="gray")
+
+        def test_port():
+            port_value = port_var.get()
+            if port_value == "(Auto-detect)":
+                port_value = None
+
+            port_status_canvas.itemconfig(port_status_circle, fill="yellow")
+            dialog.update()
+
+            # Check if service is already running on this port
+            if self.running and self.interface:
+                current_port = getattr(self.interface, 'devPath', None)
+                # If testing the same port that's already active, show green
+                if port_value is None or port_value == current_port:
+                    port_status_canvas.itemconfig(port_status_circle, fill="green")
+                    return
+
+            try:
+                test_interface = meshtastic.serial_interface.SerialInterface(devPath=port_value)
+                test_interface.close()
+                port_status_canvas.itemconfig(port_status_circle, fill="green")
+            except Exception as e:
+                # Check if error is because port is already in use by our service
+                if self.running and "busy" in str(e).lower() or "in use" in str(e).lower():
+                    port_status_canvas.itemconfig(port_status_circle, fill="green")
+                else:
+                    port_status_canvas.itemconfig(port_status_circle, fill="red")
+                    messagebox.showerror("Port Test Failed", f"Could not connect to port:\n{e}")
+
+        ttk.Button(port_frame, text="Test", command=test_port, width=5).pack(side=tk.LEFT, padx=2)
 
         row += 1
 
@@ -720,8 +786,59 @@ class MeshtasticAIGui:
 
         # Ollama Model
         ttk.Label(frame, text="Ollama Model:").grid(row=row, column=0, sticky="w", pady=5)
+        model_frame = ttk.Frame(frame)
+        model_frame.grid(row=row, column=1, sticky="ew", pady=5)
+
         model_var = tk.StringVar(value=self.config.get("ollama_model", DEFAULT_CONFIG["ollama_model"]))
-        ttk.Entry(frame, textvariable=model_var, width=40).grid(row=row, column=1, sticky="ew", pady=5)
+        ttk.Entry(model_frame, textvariable=model_var, width=20).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # AI test button and status light
+        ai_status_canvas = tk.Canvas(model_frame, width=16, height=16)
+        ai_status_canvas.pack(side=tk.LEFT, padx=5)
+        ai_status_circle = ai_status_canvas.create_oval(2, 2, 14, 14, fill="gray")
+
+        def test_ai():
+            url = url_var.get()
+            model = model_var.get()
+
+            ai_status_canvas.itemconfig(ai_status_circle, fill="yellow")
+            dialog.update()
+
+            try:
+                # Test connection to Ollama
+                base_url = url.rsplit('/api/', 1)[0]
+                response = requests.get(base_url, timeout=5)
+
+                # Try a simple query to verify model works
+                test_response = requests.post(
+                    url,
+                    json={
+                        "model": model,
+                        "prompt": "Say hi",
+                        "stream": False,
+                        "options": {"num_predict": 5}
+                    },
+                    timeout=30
+                )
+                test_response.raise_for_status()
+
+                ai_status_canvas.itemconfig(ai_status_circle, fill="green")
+                # Also update main window AI status
+                self._update_ai_status(True, f"Ready ({model})")
+            except requests.exceptions.ConnectionError:
+                ai_status_canvas.itemconfig(ai_status_circle, fill="red")
+                messagebox.showerror("AI Test Failed", f"Cannot connect to Ollama.\n\nIs it running at {url}?")
+            except requests.exceptions.HTTPError as e:
+                ai_status_canvas.itemconfig(ai_status_circle, fill="red")
+                if e.response is not None and e.response.status_code == 404:
+                    messagebox.showerror("AI Test Failed", f"Model '{model}' not found.\n\nCheck the model name.")
+                else:
+                    messagebox.showerror("AI Test Failed", f"HTTP Error: {e}")
+            except Exception as e:
+                ai_status_canvas.itemconfig(ai_status_circle, fill="red")
+                messagebox.showerror("AI Test Failed", f"Error: {e}")
+
+        ttk.Button(model_frame, text="Test AI", command=test_ai, width=7).pack(side=tk.LEFT, padx=2)
 
         row += 1
 
@@ -765,6 +882,8 @@ class MeshtasticAIGui:
             self.config["api_retries"] = int(retries_var.get())
 
             if save_config(self.config):
+                # Update main window AI status after saving
+                self._check_ollama_connection()
                 messagebox.showinfo("Settings", "Settings saved successfully!")
                 dialog.destroy()
             else:
