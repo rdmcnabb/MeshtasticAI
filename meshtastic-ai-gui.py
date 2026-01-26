@@ -58,6 +58,7 @@ class MeshtasticAIGui:
         self.current_theme = "Classic"
         self.refresh_timer_id = None
         self.refresh_interval = 30000  # 30 seconds
+        self.my_node_id = None  # Our radio's node ID
 
         self._create_menu()
         self._create_status_bar()
@@ -368,6 +369,10 @@ class MeshtasticAIGui:
         from_id = packet.get("fromId", "unknown")
         channel = packet.get("channel", 0)
 
+        # Ignore messages from our own radio (echo)
+        if self.my_node_id and from_id == self.my_node_id:
+            return
+
         self._log_received(f"From {from_id} (ch {channel}): {text}")
 
         # Check if it's an AI query
@@ -441,6 +446,10 @@ class MeshtasticAIGui:
             self.interface = meshtastic.serial_interface.SerialInterface(
                 devPath=SERIAL_PORT
             )
+            # Get our own node ID to filter out our own messages
+            my_info = self.interface.getMyNodeInfo()
+            if my_info:
+                self.my_node_id = my_info.get("user", {}).get("id")
             self._update_status(True)
             self._log_received("Service started - Connected to Meshtastic")
             # Clear and refresh node list
