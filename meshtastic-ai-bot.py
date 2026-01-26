@@ -4,6 +4,15 @@ import meshtastic.serial_interface
 from pubsub import pub
 import time
 import requests
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 # ================= CONFIG =================
 SERIAL_PORT = None          # None = auto-detect, or "/dev/ttyUSB0"
@@ -38,7 +47,7 @@ def query_ollama(question, retries=API_RETRIES):
         except Exception as e:
             last_error = e
             if attempt < retries - 1:
-                print(f"Ollama API attempt {attempt + 1} failed: {e}. Retrying in {API_RETRY_DELAY}s...")
+                logger.warning(f"Ollama API attempt {attempt + 1} failed: {e}. Retrying in {API_RETRY_DELAY}s...")
                 time.sleep(API_RETRY_DELAY)
     return f"Error: {str(last_error)[:60]}"
 
@@ -58,7 +67,7 @@ def on_receive(packet, interface):
     from_id = packet.get("fromId", "unknown")
     incoming_channel = packet.get("channel", 0)   # 0 is primary if missing
 
-    print(f"Received from {from_id} on channel {incoming_channel}: {text}")
+    logger.info(f"Received from {from_id} on channel {incoming_channel}: {text}")
 
     if not text.upper().startswith(AI_PREFIX.upper()):
         return
@@ -67,7 +76,7 @@ def on_receive(packet, interface):
     if not question:
         return
 
-    print(f"AI query detected on channel {incoming_channel}: {question}")
+    logger.info(f"AI query detected on channel {incoming_channel}: {question}")
 
     answer = query_ollama(question)
 
@@ -78,7 +87,7 @@ def on_receive(packet, interface):
     if len(reply.encode('utf-8')) > max_bytes:
         reply = f"@{from_id} {answer[:100]}..."
 
-    print(f"Preparing to send on channel {incoming_channel} only ({len(reply.encode('utf-8'))} bytes): {reply}")
+    logger.debug(f"Preparing to send on channel {incoming_channel} ({len(reply.encode('utf-8'))} bytes): {reply}")
 
     try:
         interface.sendText(
@@ -87,24 +96,24 @@ def on_receive(packet, interface):
             # Optional: want private DM instead? Uncomment next line
             # destinationId=from_id
         )
-        print(f"Reply sent successfully on channel {incoming_channel}")
+        logger.info(f"Reply sent successfully on channel {incoming_channel}")
     except Exception as e:
-        print(f"Send failed on channel {incoming_channel}: {e}")
+        logger.error(f"Send failed on channel {incoming_channel}: {e}")
         # NO FALLBACK HERE – we want to know if it fails
 
 def connect_interface():
     """Connect to Meshtastic device with error handling."""
     try:
         interface = meshtastic.serial_interface.SerialInterface(devPath=SERIAL_PORT)
-        print(f"Connected to Meshtastic device")
+        logger.info("Connected to Meshtastic device")
         return interface
     except Exception as e:
-        print(f"Failed to connect: {e}")
+        logger.error(f"Failed to connect: {e}")
         return None
 
 
 def main():
-    print("Starting Meshtastic AI listener...")
+    logger.info("Starting Meshtastic AI listener...")
 
     # Subscribe to receive events (only once)
     pub.subscribe(on_receive, "meshtastic.receive")
@@ -117,26 +126,26 @@ def main():
             if interface is None:
                 interface = connect_interface()
                 if interface is None:
-                    print(f"Retrying connection in {RECONNECT_DELAY}s...")
+                    logger.warning(f"Retrying connection in {RECONNECT_DELAY}s...")
                     time.sleep(RECONNECT_DELAY)
                     continue
-                print("Listening for messages... (Ctrl+C to exit)")
+                logger.info("Listening for messages... (Ctrl+C to exit)")
 
             # Check if connection is still alive
             try:
                 time.sleep(1)
             except Exception as e:
-                print(f"Connection lost: {e}")
+                logger.error(f"Connection lost: {e}")
                 try:
                     interface.close()
                 except:
                     pass
                 interface = None
-                print(f"Reconnecting in {RECONNECT_DELAY}s...")
+                logger.warning(f"Reconnecting in {RECONNECT_DELAY}s...")
                 time.sleep(RECONNECT_DELAY)
 
     except KeyboardInterrupt:
-        print("\nShutting down...")
+        logger.info("Shutting down...")
     finally:
         if interface:
             interface.close()
