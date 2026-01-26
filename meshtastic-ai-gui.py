@@ -182,6 +182,9 @@ class MeshtasticAIGui:
         # Apply default theme
         self._apply_theme("Classic")
 
+        # Check Ollama connection on startup (after window appears)
+        self.root.after(500, self._check_ollama_connection)
+
     def _create_menu(self):
         """Create the menu bar."""
         menubar = tk.Menu(self.root)
@@ -401,6 +404,44 @@ class MeshtasticAIGui:
         # Status indicator background
         self.status_indicator.configure(bg=theme["bg"])
 
+    def _check_ollama_connection(self):
+        """Check if Ollama AI service is reachable. Open Settings if not."""
+        ollama_url = self.config.get("ollama_url", DEFAULT_CONFIG["ollama_url"])
+
+        # Try to connect to Ollama (just check if server responds)
+        try:
+            # Use a short timeout for the check - just see if server is there
+            # Try the base URL (remove /api/generate to get base)
+            base_url = ollama_url.rsplit('/api/', 1)[0]
+            response = requests.get(base_url, timeout=5)
+            # If we get here, Ollama is running
+            return True
+        except requests.exceptions.ConnectionError:
+            error_msg = (
+                "Cannot connect to Ollama AI service.\n\n"
+                f"Tried to connect to:\n{ollama_url}\n\n"
+                "Please check that:\n"
+                "  1. Ollama is installed and running\n"
+                "  2. The URL in Settings is correct\n\n"
+                "Opening Settings so you can configure the connection."
+            )
+        except requests.exceptions.Timeout:
+            error_msg = (
+                "Connection to Ollama timed out.\n\n"
+                f"URL: {ollama_url}\n\n"
+                "Opening Settings so you can check the configuration."
+            )
+        except Exception as e:
+            error_msg = (
+                f"Error connecting to Ollama:\n{str(e)[:100]}\n\n"
+                "Opening Settings so you can check the configuration."
+            )
+
+        # Show error and open settings
+        messagebox.showwarning("AI Service Not Found", error_msg)
+        self._open_settings()
+        return False
+
     def _on_node_select(self, event):
         """Handle node selection from treeview."""
         selection = self.node_tree.selection()
@@ -589,12 +630,39 @@ class MeshtasticAIGui:
                 response.raise_for_status()
                 result = response.json().get("response", "").strip()
                 return result or "No response."
-            except Exception as e:
-                last_error = e
+            except requests.exceptions.ConnectionError:
+                last_error = "connection_error"
                 if attempt < api_retries - 1:
                     import time
                     time.sleep(api_retry_delay)
-        return f"Error: {str(last_error)[:60]}"
+            except requests.exceptions.Timeout:
+                last_error = "timeout"
+                if attempt < api_retries - 1:
+                    import time
+                    time.sleep(api_retry_delay)
+            except requests.exceptions.HTTPError as e:
+                # Check if it's a model not found error (404)
+                if e.response is not None and e.response.status_code == 404:
+                    return f"AI Error: Model '{ollama_model}' not found. Check Settings."
+                last_error = f"http_error:{e}"
+                if attempt < api_retries - 1:
+                    import time
+                    time.sleep(api_retry_delay)
+            except Exception as e:
+                last_error = str(e)
+                if attempt < api_retries - 1:
+                    import time
+                    time.sleep(api_retry_delay)
+
+        # Return user-friendly error messages
+        if last_error == "connection_error":
+            return f"AI Error: Cannot connect to Ollama. Is it running? ({ollama_url})"
+        elif last_error == "timeout":
+            return "AI Error: Ollama took too long to respond. Try again."
+        elif isinstance(last_error, str) and last_error.startswith("http_error:"):
+            return f"AI Error: {last_error[11:][:50]}"
+        else:
+            return f"AI Error: {str(last_error)[:50]}"
 
     def _open_settings(self):
         """Open the settings dialog."""
@@ -615,13 +683,28 @@ class MeshtasticAIGui:
         port_frame = ttk.Frame(frame)
         port_frame.grid(row=row, column=1, sticky="ew", pady=5)
 
-        port_var = tk.StringVar(value=self.config.get("serial_port", ""))
+        port_var = tk.StringVar()
         port_combo = ttk.Combobox(port_frame, textvariable=port_var, width=25)
         port_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         def refresh_ports():
             ports = detect_serial_ports()
             port_combo["values"] = ["(Auto-detect)"] + ports
+
+            # Get currently configured port
+            configured_port = self.config.get("serial_port", "")
+
+            # Set the displayed value
+            if configured_port and configured_port in ports:
+                # Use the configured port if it exists
+                port_var.set(configured_port)
+            elif ports:
+                # Default to first detected port (usually /dev/ttyUSB0 - most stable)
+                port_var.set(ports[0])
+            else:
+                # No ports detected, show auto-detect
+                port_var.set("(Auto-detect)")
+
         refresh_ports()
 
         ttk.Button(port_frame, text="Refresh", command=refresh_ports, width=8).pack(side=tk.LEFT, padx=5)
