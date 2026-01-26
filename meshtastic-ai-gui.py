@@ -330,15 +330,8 @@ class MeshtasticAIGui:
         for item in self.node_tree.get_children():
             self.node_tree.delete(item)
 
-        # Request fresh node info from device
-        try:
-            self.interface.nodes.clear()
-            self.interface.requestNodes()
-        except Exception as e:
-            print(f"Node refresh error: {e}")
-
-        # Schedule update after giving time for responses
-        self.root.after(2000, self._update_node_list)
+        # Brief delay so user sees the clear, then repopulate
+        self.root.after(500, self._update_node_list)
 
     def _start_refresh_timer(self):
         """Start the automatic node refresh timer."""
