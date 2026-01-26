@@ -65,6 +65,9 @@ class MeshtasticAIGui:
         pub.subscribe(self._on_receive, "meshtastic.receive")
         pub.subscribe(self._on_node_update, "meshtastic.node.updated")
 
+        # Apply default theme
+        self._apply_theme("Classic")
+
     def _create_menu(self):
         """Create the menu bar."""
         menubar = tk.Menu(self.root)
@@ -201,10 +204,11 @@ class MeshtasticAIGui:
         """Thread-safe append to a text widget."""
         timestamp = datetime.now().strftime("%H:%M:%S")
         text_widget.config(state=tk.NORMAL)
-        start_idx = text_widget.index(tk.END)
+        # Get line count before insert (END includes trailing newline)
+        start_idx = text_widget.index("end-1c linestart")
         text_widget.insert(tk.END, f"[{timestamp}] {message}\n")
         if is_ai:
-            end_idx = text_widget.index(tk.END)
+            end_idx = text_widget.index("end-1c")
             text_widget.tag_add("ai_response", start_idx, end_idx)
         text_widget.see(tk.END)
         text_widget.config(state=tk.DISABLED)
