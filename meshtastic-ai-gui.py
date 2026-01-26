@@ -75,7 +75,13 @@ if missing_libraries:
 import threading
 import json
 import glob
+import time
 from datetime import datetime
+
+# ================= CONSTANTS =================
+MAX_MESSAGE_BYTES = 200  # Meshtastic message size limit
+OLLAMA_TIMEOUT = 90  # Seconds to wait for AI response
+NODE_REFRESH_INTERVAL = 30000  # Milliseconds between node list refreshes
 
 # ================= CONFIG FILE =================
 CONFIG_FILE = os.path.expanduser("~/.meshtastic-ai-config.json")
@@ -102,8 +108,8 @@ def load_config():
                     if key not in config:
                         config[key] = value
                 return config
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Warning: Failed to load config from {CONFIG_FILE}: {e}")
     return DEFAULT_CONFIG.copy()
 
 
@@ -168,8 +174,10 @@ class MeshtasticAIGui:
         self.node_update_pending = False  # Throttle node updates
         self.current_theme = "Classic"
         self.refresh_timer_id = None
-        self.refresh_interval = 30000  # 30 seconds
+        self.refresh_interval = NODE_REFRESH_INTERVAL
         self.selected_node_id = None  # Selected node for DM
+        self.session_start_time = None  # Track service session start
+        self.session_timer_id = None  # Timer for updating session display
 
         self._create_menu()
         self._create_status_bar()
@@ -184,6 +192,30 @@ class MeshtasticAIGui:
 
         # Check Ollama connection on startup (after window appears)
         self.root.after(500, self._check_ollama_connection)
+
+    def _start_session_timer(self):
+        """Start the session timer."""
+        self.session_start_time = time.time()
+        self._update_session_timer()
+
+    def _stop_session_timer(self):
+        """Stop the session timer and reset display."""
+        if self.session_timer_id:
+            self.root.after_cancel(self.session_timer_id)
+            self.session_timer_id = None
+        self.session_start_time = None
+        self.session_timer_label.config(text="Session: --:--:--")
+
+    def _update_session_timer(self):
+        """Update the session timer display."""
+        if self.session_start_time is None:
+            return
+        elapsed = int(time.time() - self.session_start_time)
+        hours, remainder = divmod(elapsed, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        self.session_timer_label.config(text=f"Session: {hours:02d}:{minutes:02d}:{seconds:02d}")
+        # Update every second
+        self.session_timer_id = self.root.after(1000, self._update_session_timer)
 
     def _create_menu(self):
         """Create the menu bar."""
@@ -247,6 +279,13 @@ class MeshtasticAIGui:
 
         self.ai_status_label = ttk.Label(status_frame, text="Not connected")
         self.ai_status_label.pack(side=tk.LEFT)
+
+        # Separator
+        ttk.Label(status_frame, text="  |  ").pack(side=tk.LEFT)
+
+        # Session timer (on the right side)
+        self.session_timer_label = ttk.Label(status_frame, text="Session: --:--:--")
+        self.session_timer_label.pack(side=tk.RIGHT, padx=5)
 
     def _create_main_sections(self):
         """Create the four main sections."""
@@ -618,9 +657,8 @@ class MeshtasticAIGui:
         answer = self._query_ollama(question)
 
         # Truncate safely
-        max_bytes = 200
         reply = f"@{from_id} {answer}"
-        if len(reply.encode('utf-8')) > max_bytes:
+        if len(reply.encode('utf-8')) > MAX_MESSAGE_BYTES:
             reply = f"@{from_id} {answer[:100]}..."
 
         try:
@@ -656,7 +694,7 @@ class MeshtasticAIGui:
                         "stream": False,
                         "options": {"temperature": 0.7}
                     },
-                    timeout=90
+                    timeout=OLLAMA_TIMEOUT
                 )
                 response.raise_for_status()
                 result = response.json().get("response", "").strip()
@@ -664,12 +702,10 @@ class MeshtasticAIGui:
             except requests.exceptions.ConnectionError:
                 last_error = "connection_error"
                 if attempt < api_retries - 1:
-                    import time
                     time.sleep(api_retry_delay)
             except requests.exceptions.Timeout:
                 last_error = "timeout"
                 if attempt < api_retries - 1:
-                    import time
                     time.sleep(api_retry_delay)
             except requests.exceptions.HTTPError as e:
                 # Check if it's a model not found error (404)
@@ -677,12 +713,10 @@ class MeshtasticAIGui:
                     return f"AI Error: Model '{ollama_model}' not found. Check Settings."
                 last_error = f"http_error:{e}"
                 if attempt < api_retries - 1:
-                    import time
                     time.sleep(api_retry_delay)
             except Exception as e:
                 last_error = str(e)
                 if attempt < api_retries - 1:
-                    import time
                     time.sleep(api_retry_delay)
 
         # Return user-friendly error messages
@@ -767,7 +801,7 @@ class MeshtasticAIGui:
                 port_status_canvas.itemconfig(port_status_circle, fill="green")
             except Exception as e:
                 # Check if error is because port is already in use by our service
-                if self.running and "busy" in str(e).lower() or "in use" in str(e).lower():
+                if self.running and ("busy" in str(e).lower() or "in use" in str(e).lower()):
                     port_status_canvas.itemconfig(port_status_circle, fill="green")
                 else:
                     port_status_canvas.itemconfig(port_status_circle, fill="red")
@@ -913,6 +947,8 @@ class MeshtasticAIGui:
             self.root.after(1000, self._refresh_nodes)
             # Start refresh timer
             self._start_refresh_timer()
+            # Start session timer
+            self._start_session_timer()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to connect: {e}")
             self._update_status(False)
@@ -925,6 +961,8 @@ class MeshtasticAIGui:
 
         # Stop refresh timer
         self._stop_refresh_timer()
+        # Stop session timer
+        self._stop_session_timer()
 
         try:
             if self.interface:
@@ -991,6 +1029,9 @@ class MeshtasticAIGui:
         """Handle application exit."""
         if self.running:
             self.stop_service()
+        # Unsubscribe from pubsub events
+        pub.unsubscribe(self._on_receive, "meshtastic.receive")
+        pub.unsubscribe(self._on_node_update, "meshtastic.node.updated")
         self.root.quit()
 
 
