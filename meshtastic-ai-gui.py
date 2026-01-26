@@ -88,6 +88,7 @@ CONFIG_FILE = os.path.expanduser("~/.meshtastic-ai-config.json")
 
 DEFAULT_CONFIG = {
     "serial_port": "",  # Empty = auto-detect
+    "ai_enabled": True,  # Enable/disable AI features
     "ai_prefix": "/AI",
     "ollama_url": "http://127.0.0.1:11434/api/generate",
     "ollama_model": "llama3.1",
@@ -488,7 +489,12 @@ class MeshtasticAIGui:
             self.ai_status_label.config(text=message or "Not connected")
 
     def _check_ollama_connection(self):
-        """Check if Ollama AI service is reachable. Open Settings if not."""
+        """Check if Ollama AI service is reachable (non-blocking)."""
+        # Check if AI is disabled
+        if not self.config.get("ai_enabled", True):
+            self._update_ai_status(False, "Disabled")
+            return False
+
         ollama_url = self.config.get("ollama_url", DEFAULT_CONFIG["ollama_url"])
         ollama_model = self.config.get("ollama_model", DEFAULT_CONFIG["ollama_model"])
 
@@ -503,31 +509,12 @@ class MeshtasticAIGui:
             return True
         except requests.exceptions.ConnectionError:
             self._update_ai_status(False, "Cannot connect")
-            error_msg = (
-                "Cannot connect to Ollama AI service.\n\n"
-                f"Tried to connect to:\n{ollama_url}\n\n"
-                "Please check that:\n"
-                "  1. Ollama is installed and running\n"
-                "  2. The URL in Settings is correct\n\n"
-                "Opening Settings so you can configure the connection."
-            )
         except requests.exceptions.Timeout:
             self._update_ai_status(False, "Timed out")
-            error_msg = (
-                "Connection to Ollama timed out.\n\n"
-                f"URL: {ollama_url}\n\n"
-                "Opening Settings so you can check the configuration."
-            )
         except Exception as e:
             self._update_ai_status(False, "Error")
-            error_msg = (
-                f"Error connecting to Ollama:\n{str(e)[:100]}\n\n"
-                "Opening Settings so you can check the configuration."
-            )
 
-        # Show error and open settings
-        messagebox.showwarning("AI Service Not Found", error_msg)
-        self._open_settings()
+        # Silent failure - just update status indicator, don't block user
         return False
 
     def _on_node_select(self, event):
@@ -658,17 +645,18 @@ class MeshtasticAIGui:
 
         self._log_received(f"From {from_id} (ch {channel}): {text}")
 
-        # Check if it's an AI query
-        ai_prefix = self.config.get("ai_prefix", "/AI")
-        if text.upper().startswith(ai_prefix.upper()):
-            question = text[len(ai_prefix):].strip()
-            if question:
-                # Process in a thread to not block UI
-                threading.Thread(
-                    target=self._process_ai_query,
-                    args=(question, from_id, channel, interface),
-                    daemon=True
-                ).start()
+        # Check if it's an AI query (only if AI is enabled)
+        if self.config.get("ai_enabled", True):
+            ai_prefix = self.config.get("ai_prefix", "/AI")
+            if text.upper().startswith(ai_prefix.upper()):
+                question = text[len(ai_prefix):].strip()
+                if question:
+                    # Process in a thread to not block UI
+                    threading.Thread(
+                        target=self._process_ai_query,
+                        args=(question, from_id, channel, interface),
+                        daemon=True
+                    ).start()
 
     def _process_ai_query(self, question, from_id, channel, interface):
         """Process an AI query and send response."""
@@ -751,7 +739,7 @@ class MeshtasticAIGui:
         """Open the settings dialog."""
         dialog = tk.Toplevel(self.root)
         dialog.title("Settings")
-        dialog.geometry("550x420")
+        dialog.geometry("550x460")
         dialog.transient(self.root)
         dialog.grab_set()
 
@@ -826,6 +814,13 @@ class MeshtasticAIGui:
                     messagebox.showerror("Port Test Failed", f"Could not connect to port:\n{e}")
 
         ttk.Button(port_frame, text="Test", command=test_port, width=5).pack(side=tk.LEFT, padx=2)
+
+        row += 1
+
+        # AI Enabled checkbox
+        ttk.Label(frame, text="AI Features:").grid(row=row, column=0, sticky="w", pady=5)
+        ai_enabled_var = tk.BooleanVar(value=self.config.get("ai_enabled", True))
+        ttk.Checkbutton(frame, text="Enable AI responses", variable=ai_enabled_var).grid(row=row, column=1, sticky="w", pady=5)
 
         row += 1
 
@@ -927,6 +922,7 @@ class MeshtasticAIGui:
                 port_value = ""
 
             self.config["serial_port"] = port_value
+            self.config["ai_enabled"] = ai_enabled_var.get()
             self.config["ollama_url"] = url_var.get()
             self.config["ollama_model"] = model_var.get()
             self.config["ai_prefix"] = prefix_var.get()
@@ -1030,16 +1026,17 @@ class MeshtasticAIGui:
             self._log_received(f"From {my_id} {dest_str} (ch {channel}): {message}")
             self.message_text.delete("1.0", tk.END)
 
-            # Check if local message is an AI query and process it
-            ai_prefix = self.config.get("ai_prefix", "/AI")
-            if message.upper().startswith(ai_prefix.upper()):
-                question = message[len(ai_prefix):].strip()
-                if question:
-                    threading.Thread(
-                        target=self._process_ai_query,
-                        args=(question, my_id, channel, self.interface),
-                        daemon=True
-                    ).start()
+            # Check if local message is an AI query and process it (only if AI enabled)
+            if self.config.get("ai_enabled", True):
+                ai_prefix = self.config.get("ai_prefix", "/AI")
+                if message.upper().startswith(ai_prefix.upper()):
+                    question = message[len(ai_prefix):].strip()
+                    if question:
+                        threading.Thread(
+                            target=self._process_ai_query,
+                            args=(question, my_id, channel, self.interface),
+                            daemon=True
+                        ).start()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to send: {e}")
 
