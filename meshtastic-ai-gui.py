@@ -179,6 +179,10 @@ class MeshtasticAIGui:
         self.selected_node_id = None  # Selected node for DM
         self.session_start_time = None  # Track service session start
         self.session_timer_id = None  # Timer for updating session display
+        self.messages_received = 0  # Count of received messages
+        self.messages_sent = 0  # Count of sent messages
+        self.mini_mode = False  # Track mini mode state
+        self.normal_geometry = None  # Store normal window size
 
         self._create_menu()
         self._create_status_bar()
@@ -218,31 +222,144 @@ class MeshtasticAIGui:
         # Update every second
         self.session_timer_id = self.root.after(1000, self._update_session_timer)
 
+    def _update_message_counters(self):
+        """Update the message counter display."""
+        self.message_counter_label.config(
+            text=f"Rx: {self.messages_received} | Tx: {self.messages_sent}"
+        )
+
+    def _toggle_mini_mode(self):
+        """Toggle between mini mode and normal mode."""
+        if self.mini_mode:
+            # Restore normal mode
+            self.mini_mode = False
+            if hasattr(self, 'mini_window') and self.mini_window:
+                self.mini_window.destroy()
+                self.mini_window = None
+            self.root.deiconify()  # Show main window
+        else:
+            # Enter mini mode - create a small separate window
+            self.mini_mode = True
+            x = self.root.winfo_x()
+            y = self.root.winfo_y()
+
+            # Hide main window
+            self.root.withdraw()
+
+            # Create mini window
+            self.mini_window = tk.Toplevel()
+            self.mini_window.title("Mini")
+            self.mini_window.geometry(f"580x30+{x}+{y}")
+            self.mini_window.overrideredirect(True)  # No decorations
+            self.mini_window.attributes('-topmost', True)
+
+            # Create mini status bar
+            mini_frame = ttk.Frame(self.mini_window)
+            mini_frame.pack(fill=tk.BOTH, expand=True)
+
+            # Radio status
+            ttk.Label(mini_frame, text="Radio:").pack(side=tk.LEFT, padx=2)
+            self.mini_radio_indicator = tk.Canvas(mini_frame, width=16, height=16)
+            self.mini_radio_indicator.pack(side=tk.LEFT)
+            radio_color = "green" if self.running else "red"
+            self.mini_radio_circle = self.mini_radio_indicator.create_oval(2, 2, 14, 14, fill=radio_color)
+
+            ttk.Label(mini_frame, text=" | AI:").pack(side=tk.LEFT)
+            self.mini_ai_indicator = tk.Canvas(mini_frame, width=16, height=16)
+            self.mini_ai_indicator.pack(side=tk.LEFT)
+            ai_color = self.ai_status_indicator.itemcget(self.ai_status_circle, 'fill')
+            self.mini_ai_circle = self.mini_ai_indicator.create_oval(2, 2, 14, 14, fill=ai_color)
+
+            ttk.Label(mini_frame, text=" | ").pack(side=tk.LEFT)
+            self.mini_counter_label = ttk.Label(mini_frame, text=f"Rx:{self.messages_received} Tx:{self.messages_sent}")
+            self.mini_counter_label.pack(side=tk.LEFT)
+
+            self.mini_session_label = ttk.Label(mini_frame, text="")
+            self.mini_session_label.pack(side=tk.RIGHT, padx=5)
+            self._update_mini_session()
+
+            # Bind events for drag and click
+            self._drag_start_x = 0
+            self._drag_start_y = 0
+            self._drag_moved = False
+
+            mini_frame.bind("<Button-1>", self._mini_mode_click)
+            mini_frame.bind("<B1-Motion>", self._mini_mode_drag)
+            mini_frame.bind("<ButtonRelease-1>", self._mini_mode_release)
+
+            # Handle window close
+            self.mini_window.protocol("WM_DELETE_WINDOW", self._toggle_mini_mode)
+
+    def _update_mini_session(self):
+        """Update the mini mode session timer."""
+        if not self.mini_mode or not hasattr(self, 'mini_window') or not self.mini_window:
+            return
+        if self.session_start_time:
+            elapsed = int(time.time() - self.session_start_time)
+            hours, remainder = divmod(elapsed, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            self.mini_session_label.config(text=f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+        else:
+            self.mini_session_label.config(text="--:--:--")
+        # Update mini counters too
+        self.mini_counter_label.config(text=f"Rx:{self.messages_received} Tx:{self.messages_sent}")
+        # Schedule next update
+        if self.mini_mode:
+            self.mini_window.after(1000, self._update_mini_session)
+
+    def _mini_mode_click(self, event):
+        """Handle click in mini mode - record position for drag detection."""
+        self._drag_start_x = event.x_root
+        self._drag_start_y = event.y_root
+        self._drag_moved = False
+
+    def _mini_mode_drag(self, event):
+        """Handle drag in mini mode - move window."""
+        dx = event.x_root - self._drag_start_x
+        dy = event.y_root - self._drag_start_y
+        if abs(dx) > 5 or abs(dy) > 5:
+            self._drag_moved = True
+            x = self.mini_window.winfo_x() + dx
+            y = self.mini_window.winfo_y() + dy
+            self.mini_window.geometry(f"+{x}+{y}")
+            self._drag_start_x = event.x_root
+            self._drag_start_y = event.y_root
+
+    def _mini_mode_release(self, event):
+        """Handle mouse release in mini mode - exit if it was a click, not drag."""
+        if not self._drag_moved:
+            self._toggle_mini_mode()
+
     def _create_menu(self):
         """Create the menu bar."""
-        menubar = tk.Menu(self.root)
-        self.root.config(menu=menubar)
+        self.menubar = tk.Menu(self.root)
+        self.root.config(menu=self.menubar)
 
         # Service menu
-        service_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Service", menu=service_menu)
+        service_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Service", menu=service_menu)
         service_menu.add_command(label="Start", command=self.start_service)
         service_menu.add_command(label="Stop", command=self.stop_service)
         service_menu.add_separator()
         service_menu.add_command(label="Exit", command=self.on_exit)
 
         # Theme menu
-        theme_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Theme", menu=theme_menu)
+        theme_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Theme", menu=theme_menu)
         for theme_name in THEMES.keys():
             theme_menu.add_command(
                 label=theme_name,
                 command=lambda t=theme_name: self._apply_theme(t)
             )
 
+        # View menu
+        view_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="View", menu=view_menu)
+        view_menu.add_command(label="Mini Mode", command=self._toggle_mini_mode)
+
         # Tools menu
-        tools_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Tools", menu=tools_menu)
+        tools_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Tools", menu=tools_menu)
         tools_menu.add_command(
             label="Refresh Nodes", command=self._refresh_nodes
         )
@@ -250,8 +367,8 @@ class MeshtasticAIGui:
         tools_menu.add_command(label="Settings", command=self._open_settings)
 
         # Help menu
-        help_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Help", menu=help_menu)
         help_menu.add_command(label="About", command=self._show_about)
 
     def _show_about(self):
@@ -269,52 +386,56 @@ class MeshtasticAIGui:
 
     def _create_status_bar(self):
         """Create the status bar at the bottom."""
-        status_frame = ttk.Frame(self.root)
-        status_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=5)
+        self.status_frame = ttk.Frame(self.root)
+        self.status_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=5)
 
         # Meshtastic connection status
-        ttk.Label(status_frame, text="Radio:").pack(side=tk.LEFT)
+        ttk.Label(self.status_frame, text="Radio:").pack(side=tk.LEFT)
 
-        self.status_indicator = tk.Canvas(status_frame, width=20, height=20)
+        self.status_indicator = tk.Canvas(self.status_frame, width=20, height=20)
         self.status_indicator.pack(side=tk.LEFT, padx=5)
         self.status_circle = self.status_indicator.create_oval(
             2, 2, 18, 18, fill="red"
         )
 
-        self.status_label = ttk.Label(status_frame, text="Stopped")
+        self.status_label = ttk.Label(self.status_frame, text="Stopped")
         self.status_label.pack(side=tk.LEFT)
 
         # Separator
-        ttk.Label(status_frame, text="  |  ").pack(side=tk.LEFT)
+        ttk.Label(self.status_frame, text="  |  ").pack(side=tk.LEFT)
 
         # AI service status
-        ttk.Label(status_frame, text="AI:").pack(side=tk.LEFT)
+        ttk.Label(self.status_frame, text="AI:").pack(side=tk.LEFT)
 
-        self.ai_status_indicator = tk.Canvas(status_frame, width=20, height=20)
+        self.ai_status_indicator = tk.Canvas(self.status_frame, width=20, height=20)
         self.ai_status_indicator.pack(side=tk.LEFT, padx=5)
         self.ai_status_circle = self.ai_status_indicator.create_oval(
             2, 2, 18, 18, fill="red"
         )
 
-        self.ai_status_label = ttk.Label(status_frame, text="Not connected")
+        self.ai_status_label = ttk.Label(self.status_frame, text="Not connected")
         self.ai_status_label.pack(side=tk.LEFT)
 
         # Separator
-        ttk.Label(status_frame, text="  |  ").pack(side=tk.LEFT)
+        ttk.Label(self.status_frame, text="  |  ").pack(side=tk.LEFT)
+
+        # Message counters
+        self.message_counter_label = ttk.Label(self.status_frame, text="Rx: 0 | Tx: 0")
+        self.message_counter_label.pack(side=tk.LEFT)
 
         # Session timer (on the right side)
-        self.session_timer_label = ttk.Label(status_frame, text="Session: --:--:--")
+        self.session_timer_label = ttk.Label(self.status_frame, text="Session: --:--:--")
         self.session_timer_label.pack(side=tk.RIGHT, padx=5)
 
     def _create_main_sections(self):
         """Create the four main sections."""
         # Main container with paned windows for resizable sections
-        main_pane = ttk.PanedWindow(self.root, orient=tk.VERTICAL)
-        main_pane.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.main_pane = ttk.PanedWindow(self.root, orient=tk.VERTICAL)
+        self.main_pane.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         # Section 0: Node List (top section)
-        nodes_frame = ttk.LabelFrame(main_pane, text="Nodes")
-        main_pane.add(nodes_frame, weight=1)
+        nodes_frame = ttk.LabelFrame(self.main_pane, text="Nodes")
+        self.main_pane.add(nodes_frame, weight=1)
 
         # Create treeview for nodes with scrollbar
         node_container = ttk.Frame(nodes_frame)
@@ -350,8 +471,8 @@ class MeshtasticAIGui:
         self.node_tree.bind("<<TreeviewSelect>>", self._on_node_select)
 
         # Section 1: Messages Received
-        received_frame = ttk.LabelFrame(main_pane, text="Messages Received")
-        main_pane.add(received_frame, weight=1)
+        received_frame = ttk.LabelFrame(self.main_pane, text="Messages Received")
+        self.main_pane.add(received_frame, weight=1)
 
         self.received_text = scrolledtext.ScrolledText(
             received_frame, height=8, state=tk.DISABLED
@@ -359,8 +480,8 @@ class MeshtasticAIGui:
         self.received_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         # Section 2: Messages Sent
-        replies_frame = ttk.LabelFrame(main_pane, text="Messages Sent")
-        main_pane.add(replies_frame, weight=1)
+        replies_frame = ttk.LabelFrame(self.main_pane, text="Messages Sent")
+        self.main_pane.add(replies_frame, weight=1)
 
         self.replies_text = scrolledtext.ScrolledText(
             replies_frame, height=8, state=tk.DISABLED
@@ -368,8 +489,8 @@ class MeshtasticAIGui:
         self.replies_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         # Section 3: Send Message
-        send_frame = ttk.LabelFrame(main_pane, text="Send Message")
-        main_pane.add(send_frame, weight=1)
+        send_frame = ttk.LabelFrame(self.main_pane, text="Send Message")
+        self.main_pane.add(send_frame, weight=1)
 
         # Destination selection (node from list)
         dest_frame = ttk.Frame(send_frame)
@@ -644,6 +765,10 @@ class MeshtasticAIGui:
         channel = packet.get("channel", 0)
 
         self._log_received(f"From {from_id} (ch {channel}): {text}")
+
+        # Update received counter
+        self.messages_received += 1
+        self.root.after(0, self._update_message_counters)
 
         # Check if it's an AI query (only if AI is enabled)
         if self.config.get("ai_enabled", True):
@@ -1025,6 +1150,10 @@ class MeshtasticAIGui:
             # Also show in Messages Received so we see the full conversation
             self._log_received(f"From {my_id} {dest_str} (ch {channel}): {message}")
             self.message_text.delete("1.0", tk.END)
+
+            # Update sent counter
+            self.messages_sent += 1
+            self._update_message_counters()
 
             # Check if local message is an AI query and process it (only if AI enabled)
             if self.config.get("ai_enabled", True):
