@@ -88,6 +88,7 @@ CONFIG_FILE = os.path.expanduser("~/.meshtastic-ai-config.json")
 
 DEFAULT_CONFIG = {
     "serial_port": "",  # Empty = auto-detect
+    "auto_start": True,  # Auto-start service on launch
     "ai_enabled": True,  # Enable/disable AI features
     "ai_prefix": "/AI",
     "ollama_url": "http://127.0.0.1:11434/api/generate",
@@ -197,6 +198,10 @@ class MeshtasticAIGui:
 
         # Check Ollama connection on startup (after window appears)
         self.root.after(500, self._check_ollama_connection)
+
+        # Auto-start service if enabled
+        if self.config.get("auto_start", True):
+            self.root.after(1000, self.start_service)
 
     def _start_session_timer(self):
         """Start the session timer."""
@@ -947,6 +952,13 @@ class MeshtasticAIGui:
 
         row += 1
 
+        # Auto-start checkbox
+        ttk.Label(frame, text="Startup:").grid(row=row, column=0, sticky="w", pady=5)
+        auto_start_var = tk.BooleanVar(value=self.config.get("auto_start", True))
+        ttk.Checkbutton(frame, text="Auto-start service on launch", variable=auto_start_var).grid(row=row, column=1, sticky="w", pady=5)
+
+        row += 1
+
         # AI Enabled checkbox
         ttk.Label(frame, text="AI Features:").grid(row=row, column=0, sticky="w", pady=5)
         ai_enabled_var = tk.BooleanVar(value=self.config.get("ai_enabled", True))
@@ -1052,6 +1064,7 @@ class MeshtasticAIGui:
                 port_value = ""
 
             self.config["serial_port"] = port_value
+            self.config["auto_start"] = auto_start_var.get()
             self.config["ai_enabled"] = ai_enabled_var.get()
             self.config["ollama_url"] = url_var.get()
             self.config["ollama_model"] = model_var.get()
