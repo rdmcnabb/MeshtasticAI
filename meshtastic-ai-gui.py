@@ -79,6 +79,7 @@ import time
 from datetime import datetime
 
 # ================= CONSTANTS =================
+VERSION = "2.4.0"
 MAX_MESSAGE_BYTES = 200  # Meshtastic message size limit
 OLLAMA_TIMEOUT = 90  # Seconds to wait for AI response
 NODE_REFRESH_INTERVAL = 30000  # Milliseconds between node list refreshes
@@ -96,6 +97,11 @@ DEFAULT_CONFIG = {
     "api_retries": 3,
     "api_retry_delay": 2,
     "default_channel": 1,
+    "window_geometry": "",  # Window size and position
+    "theme": "Classic",  # Remember selected theme
+    "font_size": 10,  # Font size for text areas
+    "auto_reconnect": True,  # Auto-reconnect on disconnect
+    "sound_notifications": True,  # Play sound on incoming messages
 }
 
 
@@ -147,6 +153,15 @@ THEMES = {
         "tree_bg": "white",
         "tree_fg": "black",
     },
+    "Dark": {
+        "bg": "#2b2b2b",
+        "fg": "#e0e0e0",
+        "text_bg": "#1e1e1e",
+        "text_fg": "#d4d4d4",
+        "ai_color": "#569cd6",
+        "tree_bg": "#1e1e1e",
+        "tree_fg": "#d4d4d4",
+    },
     "Matrix": {
         "bg": "black",
         "fg": "#00ff00",
@@ -156,6 +171,24 @@ THEMES = {
         "tree_bg": "black",
         "tree_fg": "#00ff00",
     },
+    "Ocean": {
+        "bg": "#1a3a4a",
+        "fg": "#b8d4e3",
+        "text_bg": "#0d2633",
+        "text_fg": "#a8c8d8",
+        "ai_color": "#4fc3f7",
+        "tree_bg": "#0d2633",
+        "tree_fg": "#a8c8d8",
+    },
+    "Amber": {
+        "bg": "#2a2015",
+        "fg": "#ffb300",
+        "text_bg": "#1a1510",
+        "text_fg": "#ffa000",
+        "ai_color": "#ff6f00",
+        "tree_bg": "#1a1510",
+        "tree_fg": "#ffa000",
+    },
 }
 # ================================================
 
@@ -163,11 +196,17 @@ THEMES = {
 class MeshtasticAIGui:
     def __init__(self, root):
         self.root = root
-        self.root.title("Meshtastic AI Bot")
-        self.root.geometry("800x750")
+        self.root.title(f"Meshtastic AI Bot v{VERSION}")
 
-        # Load configuration
+        # Load configuration first to get window geometry
         self.config = load_config()
+
+        # Restore window geometry or use default
+        saved_geometry = self.config.get("window_geometry", "")
+        if saved_geometry:
+            self.root.geometry(saved_geometry)
+        else:
+            self.root.geometry("800x750")
 
         self.interface = None
         self.running = False
@@ -180,6 +219,7 @@ class MeshtasticAIGui:
         self.selected_node_id = None  # Selected node for DM
         self.session_start_time = None  # Track service session start
         self.session_timer_id = None  # Timer for updating session display
+        self.connection_check_id = None  # Timer for connection health check
         self.messages_received = 0  # Count of received messages
         self.messages_sent = 0  # Count of sent messages
         self.mini_mode = False  # Track mini mode state
@@ -193,8 +233,12 @@ class MeshtasticAIGui:
         pub.subscribe(self._on_receive, "meshtastic.receive")
         pub.subscribe(self._on_node_update, "meshtastic.node.updated")
 
-        # Apply default theme
-        self._apply_theme("Classic")
+        # Apply saved theme or default
+        saved_theme = self.config.get("theme", "Classic")
+        self._apply_theme(saved_theme if saved_theme in THEMES else "Classic")
+
+        # Apply saved font size
+        self._apply_font_size(self.config.get("font_size", 10))
 
         # Check Ollama connection on startup (after window appears)
         self.root.after(500, self._check_ollama_connection)
@@ -202,6 +246,11 @@ class MeshtasticAIGui:
         # Auto-start service if enabled
         if self.config.get("auto_start", True):
             self.root.after(1000, self.start_service)
+
+        # Keyboard shortcuts
+        self.root.bind("<Control-Return>", lambda e: self.send_message())
+        self.root.bind("<Control-m>", lambda e: self._toggle_mini_mode())
+        self.root.bind("<Escape>", lambda e: self._clear_message_input())
 
     def _start_session_timer(self):
         """Start the session timer."""
@@ -232,6 +281,18 @@ class MeshtasticAIGui:
         self.message_counter_label.config(
             text=f"Rx: {self.messages_received} | Tx: {self.messages_sent}"
         )
+
+    def _show_counter_menu(self, event):
+        """Show context menu for message counters."""
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="Reset Counters", command=self._reset_counters)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _reset_counters(self):
+        """Reset message counters to zero."""
+        self.messages_received = 0
+        self.messages_sent = 0
+        self._update_message_counters()
 
     def _toggle_mini_mode(self):
         """Toggle between mini mode and normal mode."""
@@ -379,7 +440,7 @@ class MeshtasticAIGui:
     def _show_about(self):
         """Show the About dialog."""
         about_text = (
-            "Meshtastic AI Bot\n\n"
+            f"Meshtastic AI Bot v{VERSION}\n\n"
             "A GUI for Meshtastic mesh networking\n"
             "with Ollama AI integration.\n\n"
             "Developed by Ronald D. McNabb\n"
@@ -427,6 +488,8 @@ class MeshtasticAIGui:
         # Message counters
         self.message_counter_label = ttk.Label(self.status_frame, text="Rx: 0 | Tx: 0")
         self.message_counter_label.pack(side=tk.LEFT)
+        # Right-click to reset counters
+        self.message_counter_label.bind("<Button-3>", self._show_counter_menu)
 
         # Session timer (on the right side)
         self.session_timer_label = ttk.Label(self.status_frame, text="Session: --:--:--")
@@ -605,6 +668,14 @@ class MeshtasticAIGui:
         self.status_indicator.configure(bg=theme["bg"])
         self.ai_status_indicator.configure(bg=theme["bg"])
 
+    def _apply_font_size(self, size):
+        """Apply font size to text widgets."""
+        font = ("TkFixedFont", size)
+        for text_widget in [
+            self.received_text, self.replies_text, self.message_text
+        ]:
+            text_widget.config(font=font)
+
     def _update_ai_status(self, connected, message=None):
         """Update the AI status indicator."""
         if connected:
@@ -664,6 +735,10 @@ class MeshtasticAIGui:
         # Clear treeview selection
         for item in self.node_tree.selection():
             self.node_tree.selection_remove(item)
+
+    def _clear_message_input(self):
+        """Clear the message input field."""
+        self.message_text.delete("1.0", tk.END)
 
     def _on_node_update(self, node, interface):
         """Handle node updates from meshtastic."""
@@ -775,6 +850,10 @@ class MeshtasticAIGui:
         self.messages_received += 1
         self.root.after(0, self._update_message_counters)
 
+        # Play notification sound if enabled
+        if self.config.get("sound_notifications", True):
+            self.root.after(0, self.root.bell)
+
         # Check if it's an AI query (only if AI is enabled)
         if self.config.get("ai_enabled", True):
             ai_prefix = self.config.get("ai_prefix", "/AI")
@@ -874,7 +953,7 @@ class MeshtasticAIGui:
         """Open the settings dialog."""
         dialog = tk.Toplevel(self.root)
         dialog.title("Settings")
-        dialog.geometry("550x460")
+        dialog.geometry("550x580")
         dialog.transient(self.root)
         dialog.grab_set()
 
@@ -956,6 +1035,20 @@ class MeshtasticAIGui:
         ttk.Label(frame, text="Startup:").grid(row=row, column=0, sticky="w", pady=5)
         auto_start_var = tk.BooleanVar(value=self.config.get("auto_start", True))
         ttk.Checkbutton(frame, text="Auto-start service on launch", variable=auto_start_var).grid(row=row, column=1, sticky="w", pady=5)
+
+        row += 1
+
+        # Auto-reconnect checkbox
+        ttk.Label(frame, text="Connection:").grid(row=row, column=0, sticky="w", pady=5)
+        auto_reconnect_var = tk.BooleanVar(value=self.config.get("auto_reconnect", True))
+        ttk.Checkbutton(frame, text="Auto-reconnect on disconnect", variable=auto_reconnect_var).grid(row=row, column=1, sticky="w", pady=5)
+
+        row += 1
+
+        # Sound notifications checkbox
+        ttk.Label(frame, text="Notifications:").grid(row=row, column=0, sticky="w", pady=5)
+        sound_var = tk.BooleanVar(value=self.config.get("sound_notifications", True))
+        ttk.Checkbutton(frame, text="Play sound on incoming messages", variable=sound_var).grid(row=row, column=1, sticky="w", pady=5)
 
         row += 1
 
@@ -1052,6 +1145,13 @@ class MeshtasticAIGui:
 
         row += 1
 
+        # Font Size
+        ttk.Label(frame, text="Font Size:").grid(row=row, column=0, sticky="w", pady=5)
+        font_size_var = tk.StringVar(value=str(self.config.get("font_size", 10)))
+        ttk.Spinbox(frame, from_=8, to=18, textvariable=font_size_var, width=5).grid(row=row, column=1, sticky="w", pady=5)
+
+        row += 1
+
         frame.columnconfigure(1, weight=1)
 
         # Buttons
@@ -1066,15 +1166,20 @@ class MeshtasticAIGui:
             self.config["serial_port"] = port_value
             self.config["auto_start"] = auto_start_var.get()
             self.config["ai_enabled"] = ai_enabled_var.get()
+            self.config["auto_reconnect"] = auto_reconnect_var.get()
+            self.config["sound_notifications"] = sound_var.get()
             self.config["ollama_url"] = url_var.get()
             self.config["ollama_model"] = model_var.get()
             self.config["ai_prefix"] = prefix_var.get()
             self.config["default_channel"] = int(channel_var.get())
             self.config["api_retries"] = int(retries_var.get())
+            self.config["font_size"] = int(font_size_var.get())
 
             if save_config(self.config):
                 # Update main window AI status after saving
                 self._check_ollama_connection()
+                # Apply font size to text widgets
+                self._apply_font_size(self.config["font_size"])
                 messagebox.showinfo("Settings", "Settings saved successfully!")
                 dialog.destroy()
             else:
@@ -1106,6 +1211,8 @@ class MeshtasticAIGui:
             self._start_refresh_timer()
             # Start session timer
             self._start_session_timer()
+            # Start connection health check
+            self._start_connection_check()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to connect: {e}")
             self._update_status(False)
@@ -1120,6 +1227,8 @@ class MeshtasticAIGui:
         self._stop_refresh_timer()
         # Stop session timer
         self._stop_session_timer()
+        # Stop connection check
+        self._stop_connection_check()
 
         try:
             if self.interface:
@@ -1132,6 +1241,85 @@ class MeshtasticAIGui:
                 self.node_tree.delete(item)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to stop: {e}")
+
+    def _start_connection_check(self):
+        """Start periodic connection health check."""
+        self._stop_connection_check()
+        self._check_connection_health()
+
+    def _stop_connection_check(self):
+        """Stop the connection health check timer."""
+        if hasattr(self, 'connection_check_id') and self.connection_check_id:
+            self.root.after_cancel(self.connection_check_id)
+            self.connection_check_id = None
+
+    def _check_connection_health(self):
+        """Check if the Meshtastic connection is still alive."""
+        if not self.running or not self.interface:
+            return
+
+        try:
+            # Try to access the interface to check if it's still connected
+            # This will raise an exception if the device is disconnected
+            _ = self.interface.myInfo
+        except Exception:
+            # Connection lost - attempt auto-reconnect if enabled
+            if self.config.get("auto_reconnect", True):
+                self._log_received("Connection lost - attempting to reconnect...")
+                self._attempt_reconnect()
+            else:
+                self._log_received("Connection lost")
+                self._handle_disconnect()
+            return
+
+        # Schedule next check (every 10 seconds)
+        self.connection_check_id = self.root.after(10000, self._check_connection_health)
+
+    def _handle_disconnect(self):
+        """Handle a disconnection without showing dialog."""
+        self.running = False
+        self._stop_refresh_timer()
+        self._stop_session_timer()
+        if self.interface:
+            try:
+                self.interface.close()
+            except Exception:
+                pass
+            self.interface = None
+        self._update_status(False)
+        # Clear node list
+        for item in self.node_tree.get_children():
+            self.node_tree.delete(item)
+
+    def _attempt_reconnect(self):
+        """Attempt to reconnect to the Meshtastic device."""
+        # First clean up the old connection
+        self._handle_disconnect()
+
+        # Wait a moment then try to reconnect
+        self.root.after(2000, self._do_reconnect)
+
+    def _do_reconnect(self):
+        """Perform the actual reconnection attempt."""
+        try:
+            serial_port = self.config.get("serial_port", "")
+            dev_path = serial_port if serial_port else None
+            self.interface = meshtastic.serial_interface.SerialInterface(
+                devPath=dev_path
+            )
+            actual_port = self.interface.devPath if hasattr(self.interface, 'devPath') else dev_path
+            self.running = True
+            self._update_status(True, actual_port)
+            self._log_received(f"Reconnected to Meshtastic on {actual_port}")
+            self.root.after(1000, self._refresh_nodes)
+            self._start_refresh_timer()
+            self._start_session_timer()
+            self._start_connection_check()
+        except Exception as e:
+            self._log_received(f"Reconnect failed: {e} - retrying in 5 seconds...")
+            # Retry in 5 seconds if auto-reconnect is still enabled
+            if self.config.get("auto_reconnect", True):
+                self.root.after(5000, self._do_reconnect)
 
     def send_message(self):
         """Send a message to the mesh network."""
@@ -1192,6 +1380,10 @@ class MeshtasticAIGui:
         """Handle application exit."""
         if self.running:
             self.stop_service()
+        # Save window geometry and theme before exit
+        self.config["window_geometry"] = self.root.geometry()
+        self.config["theme"] = self.current_theme
+        save_config(self.config)
         # Unsubscribe from pubsub events
         pub.unsubscribe(self._on_receive, "meshtastic.receive")
         pub.unsubscribe(self._on_node_update, "meshtastic.node.updated")
