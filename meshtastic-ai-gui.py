@@ -17,6 +17,8 @@ except ImportError:
 try:
     import meshtastic
     import meshtastic.serial_interface
+    import meshtastic.tcp_interface
+    import meshtastic.ble_interface
 except ImportError:
     missing_libraries.append(("meshtastic", "meshtastic"))
 
@@ -88,7 +90,10 @@ NODE_REFRESH_INTERVAL = 30000  # Milliseconds between node list refreshes
 CONFIG_FILE = os.path.expanduser("~/.meshtastic-ai-config.json")
 
 DEFAULT_CONFIG = {
+    "connection_type": "serial",  # serial, tcp, or ble
     "serial_port": "",  # Empty = auto-detect
+    "tcp_host": "",  # IP address or hostname for TCP connection
+    "ble_address": "",  # Bluetooth device address
     "auto_start": True,  # Auto-start service on launch
     "ai_enabled": True,  # Enable/disable AI features
     "ai_prefix": "/AI",
@@ -430,6 +435,7 @@ class MeshtasticAIGui:
             label="Refresh Nodes", command=self._refresh_nodes
         )
         tools_menu.add_separator()
+        tools_menu.add_command(label="Radio Connection", command=self._open_radio_config)
         tools_menu.add_command(label="Settings", command=self._open_settings)
 
         # Help menu
@@ -1043,11 +1049,152 @@ class MeshtasticAIGui:
         else:
             return f"AI Error: {str(last_error)[:50]}"
 
+    def _open_radio_config(self):
+        """Open the radio connection configuration dialog."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Radio Connection")
+        dialog.geometry("450x350")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        frame = ttk.Frame(dialog, padding=15)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        # Title
+        ttk.Label(frame, text="Connection Type", font=("TkDefaultFont", 11, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 10)
+        )
+
+        # Connection type variable
+        conn_type_var = tk.StringVar(value=self.config.get("connection_type", "serial"))
+
+        # Radio buttons for connection type
+        radio_frame = ttk.Frame(frame)
+        radio_frame.grid(row=1, column=0, columnspan=2, sticky="w", pady=5)
+
+        ttk.Radiobutton(radio_frame, text="Serial (USB)", variable=conn_type_var,
+                        value="serial", command=lambda: update_fields()).pack(side=tk.LEFT, padx=(0, 15))
+        ttk.Radiobutton(radio_frame, text="TCP (WiFi)", variable=conn_type_var,
+                        value="tcp", command=lambda: update_fields()).pack(side=tk.LEFT, padx=(0, 15))
+        ttk.Radiobutton(radio_frame, text="Bluetooth (BLE)", variable=conn_type_var,
+                        value="ble", command=lambda: update_fields()).pack(side=tk.LEFT)
+
+        # Separator
+        ttk.Separator(frame, orient="horizontal").grid(row=2, column=0, columnspan=2, sticky="ew", pady=15)
+
+        # Dynamic settings frame
+        settings_frame = ttk.Frame(frame)
+        settings_frame.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=5)
+
+        # Variables for each connection type
+        serial_port_var = tk.StringVar(value=self.config.get("serial_port", "") or "(Auto-detect)")
+        tcp_host_var = tk.StringVar(value=self.config.get("tcp_host", ""))
+        ble_address_var = tk.StringVar(value=self.config.get("ble_address", ""))
+
+        # Widgets dict to track them
+        widgets = {}
+
+        def clear_settings_frame():
+            for widget in settings_frame.winfo_children():
+                widget.destroy()
+
+        def update_fields():
+            clear_settings_frame()
+            conn_type = conn_type_var.get()
+
+            if conn_type == "serial":
+                ttk.Label(settings_frame, text="Serial Port:").grid(row=0, column=0, sticky="w", pady=5)
+                # Get available ports
+                ports = ["(Auto-detect)"]
+                for pattern in ["/dev/ttyUSB*", "/dev/ttyACM*", "/dev/cu.usbmodem*", "/dev/cu.usbserial*"]:
+                    ports.extend(glob.glob(pattern))
+                port_combo = ttk.Combobox(settings_frame, textvariable=serial_port_var, values=ports, width=30)
+                port_combo.grid(row=0, column=1, sticky="w", pady=5, padx=5)
+                widgets["serial_port"] = port_combo
+
+                ttk.Label(settings_frame, text="Leave as Auto-detect to automatically\nfind the connected radio.",
+                          foreground="gray").grid(row=1, column=0, columnspan=2, sticky="w", pady=5)
+
+            elif conn_type == "tcp":
+                ttk.Label(settings_frame, text="Host/IP Address:").grid(row=0, column=0, sticky="w", pady=5)
+                host_entry = ttk.Entry(settings_frame, textvariable=tcp_host_var, width=30)
+                host_entry.grid(row=0, column=1, sticky="w", pady=5, padx=5)
+                widgets["tcp_host"] = host_entry
+
+                ttk.Label(settings_frame, text="Enter the IP address of your radio.\nExample: 192.168.1.100",
+                          foreground="gray").grid(row=1, column=0, columnspan=2, sticky="w", pady=5)
+
+            elif conn_type == "ble":
+                ttk.Label(settings_frame, text="BLE Address:").grid(row=0, column=0, sticky="w", pady=5)
+                ble_entry = ttk.Entry(settings_frame, textvariable=ble_address_var, width=30)
+                ble_entry.grid(row=0, column=1, sticky="w", pady=5, padx=5)
+                widgets["ble_address"] = ble_entry
+
+                ttk.Label(settings_frame, text="Enter the Bluetooth address or name.\nExample: AA:BB:CC:DD:EE:FF",
+                          foreground="gray").grid(row=1, column=0, columnspan=2, sticky="w", pady=5)
+
+                # Scan button (for future use)
+                def scan_ble():
+                    messagebox.showinfo("BLE Scan", "BLE scanning not yet implemented.\nPlease enter the address manually.")
+                ttk.Button(settings_frame, text="Scan...", command=scan_ble).grid(row=0, column=2, padx=5)
+
+        # Initialize fields
+        update_fields()
+
+        # Current connection status
+        status_frame = ttk.Frame(frame)
+        status_frame.grid(row=4, column=0, columnspan=2, sticky="w", pady=15)
+
+        current_type = self.config.get("connection_type", "serial").upper()
+        status_text = f"Current: {current_type}"
+        if self.running:
+            status_text += " (Connected)"
+        else:
+            status_text += " (Not connected)"
+        ttk.Label(status_frame, text=status_text, foreground="blue").pack()
+
+        # Auto-reconnect option
+        reconnect_frame = ttk.Frame(frame)
+        reconnect_frame.grid(row=5, column=0, columnspan=2, sticky="w", pady=10)
+        auto_reconnect_var = tk.BooleanVar(value=self.config.get("auto_reconnect", True))
+        ttk.Checkbutton(reconnect_frame, text="Auto-reconnect on disconnect", variable=auto_reconnect_var).pack()
+
+        # Buttons
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(fill=tk.X, padx=15, pady=10)
+
+        def save_radio_config():
+            conn_type = conn_type_var.get()
+            self.config["connection_type"] = conn_type
+
+            if conn_type == "serial":
+                port_value = serial_port_var.get()
+                if port_value == "(Auto-detect)":
+                    port_value = ""
+                self.config["serial_port"] = port_value
+            elif conn_type == "tcp":
+                self.config["tcp_host"] = tcp_host_var.get()
+            elif conn_type == "ble":
+                self.config["ble_address"] = ble_address_var.get()
+
+            self.config["auto_reconnect"] = auto_reconnect_var.get()
+
+            if save_config(self.config):
+                messagebox.showinfo("Radio Connection", "Configuration saved!\nRestart the service to apply changes.")
+                dialog.destroy()
+            else:
+                messagebox.showerror("Error", "Failed to save configuration")
+
+        ttk.Button(button_frame, text="Save", command=save_radio_config).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
+
+        frame.columnconfigure(1, weight=1)
+
     def _open_settings(self):
         """Open the settings dialog."""
         dialog = tk.Toplevel(self.root)
         dialog.title("Settings")
-        dialog.geometry("550x580")
+        dialog.geometry("550x480")
         dialog.transient(self.root)
         dialog.grab_set()
 
@@ -1057,85 +1204,10 @@ class MeshtasticAIGui:
 
         row = 0
 
-        # Serial Port
-        ttk.Label(frame, text="Serial Port:").grid(row=row, column=0, sticky="w", pady=5)
-        port_frame = ttk.Frame(frame)
-        port_frame.grid(row=row, column=1, sticky="ew", pady=5)
-
-        port_var = tk.StringVar()
-        port_combo = ttk.Combobox(port_frame, textvariable=port_var, width=20)
-        port_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        def refresh_ports():
-            ports = detect_serial_ports()
-            port_combo["values"] = ["(Auto-detect)"] + ports
-
-            # Get currently configured port
-            configured_port = self.config.get("serial_port", "")
-
-            # Set the displayed value
-            if configured_port and configured_port in ports:
-                # Use the configured port if it exists
-                port_var.set(configured_port)
-            elif ports:
-                # Default to first detected port (usually /dev/ttyUSB0 - most stable)
-                port_var.set(ports[0])
-            else:
-                # No ports detected, show auto-detect
-                port_var.set("(Auto-detect)")
-
-        refresh_ports()
-
-        ttk.Button(port_frame, text="Refresh", command=refresh_ports, width=7).pack(side=tk.LEFT, padx=2)
-
-        # Port test button and status light
-        port_status_canvas = tk.Canvas(port_frame, width=16, height=16)
-        port_status_canvas.pack(side=tk.LEFT, padx=5)
-        port_status_circle = port_status_canvas.create_oval(2, 2, 14, 14, fill="gray")
-
-        def test_port():
-            port_value = port_var.get()
-            if port_value == "(Auto-detect)":
-                port_value = None
-
-            port_status_canvas.itemconfig(port_status_circle, fill="yellow")
-            dialog.update()
-
-            # Check if service is already running on this port
-            if self.running and self.interface:
-                current_port = getattr(self.interface, 'devPath', None)
-                # If testing the same port that's already active, show green
-                if port_value is None or port_value == current_port:
-                    port_status_canvas.itemconfig(port_status_circle, fill="green")
-                    return
-
-            try:
-                test_interface = meshtastic.serial_interface.SerialInterface(devPath=port_value)
-                test_interface.close()
-                port_status_canvas.itemconfig(port_status_circle, fill="green")
-            except Exception as e:
-                # Check if error is because port is already in use by our service
-                if self.running and ("busy" in str(e).lower() or "in use" in str(e).lower()):
-                    port_status_canvas.itemconfig(port_status_circle, fill="green")
-                else:
-                    port_status_canvas.itemconfig(port_status_circle, fill="red")
-                    messagebox.showerror("Port Test Failed", f"Could not connect to port:\n{e}")
-
-        ttk.Button(port_frame, text="Test", command=test_port, width=5).pack(side=tk.LEFT, padx=2)
-
-        row += 1
-
         # Auto-start checkbox
         ttk.Label(frame, text="Startup:").grid(row=row, column=0, sticky="w", pady=5)
         auto_start_var = tk.BooleanVar(value=self.config.get("auto_start", True))
         ttk.Checkbutton(frame, text="Auto-start service on launch", variable=auto_start_var).grid(row=row, column=1, sticky="w", pady=5)
-
-        row += 1
-
-        # Auto-reconnect checkbox
-        ttk.Label(frame, text="Connection:").grid(row=row, column=0, sticky="w", pady=5)
-        auto_reconnect_var = tk.BooleanVar(value=self.config.get("auto_reconnect", True))
-        ttk.Checkbutton(frame, text="Auto-reconnect on disconnect", variable=auto_reconnect_var).grid(row=row, column=1, sticky="w", pady=5)
 
         row += 1
 
@@ -1253,14 +1325,8 @@ class MeshtasticAIGui:
         button_frame.pack(fill=tk.X, padx=10, pady=10)
 
         def save_settings():
-            port_value = port_var.get()
-            if port_value == "(Auto-detect)":
-                port_value = ""
-
-            self.config["serial_port"] = port_value
             self.config["auto_start"] = auto_start_var.get()
             self.config["ai_enabled"] = ai_enabled_var.get()
-            self.config["auto_reconnect"] = auto_reconnect_var.get()
             self.config["sound_notifications"] = sound_var.get()
             self.config["ollama_url"] = url_var.get()
             self.config["ollama_model"] = model_var.get()
@@ -1282,6 +1348,32 @@ class MeshtasticAIGui:
         ttk.Button(button_frame, text="Save", command=save_settings).pack(side=tk.RIGHT, padx=5)
         ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
 
+    def _create_interface(self):
+        """Create the appropriate interface based on connection type."""
+        conn_type = self.config.get("connection_type", "serial")
+
+        if conn_type == "serial":
+            serial_port = self.config.get("serial_port", "")
+            dev_path = serial_port if serial_port else None
+            interface = meshtastic.serial_interface.SerialInterface(devPath=dev_path)
+            conn_info = interface.devPath if hasattr(interface, 'devPath') else dev_path or "auto"
+        elif conn_type == "tcp":
+            tcp_host = self.config.get("tcp_host", "")
+            if not tcp_host:
+                raise ValueError("TCP host not configured. Please set the IP address in Radio Connection settings.")
+            interface = meshtastic.tcp_interface.TCPInterface(hostname=tcp_host)
+            conn_info = tcp_host
+        elif conn_type == "ble":
+            ble_address = self.config.get("ble_address", "")
+            if not ble_address:
+                raise ValueError("BLE address not configured. Please set the address in Radio Connection settings.")
+            interface = meshtastic.ble_interface.BLEInterface(address=ble_address)
+            conn_info = ble_address
+        else:
+            raise ValueError(f"Unknown connection type: {conn_type}")
+
+        return interface, conn_type, conn_info
+
     def start_service(self):
         """Start the Meshtastic listener service."""
         if self.running:
@@ -1289,16 +1381,10 @@ class MeshtasticAIGui:
             return
 
         try:
-            serial_port = self.config.get("serial_port", "")
-            # Empty string means auto-detect
-            dev_path = serial_port if serial_port else None
-            self.interface = meshtastic.serial_interface.SerialInterface(
-                devPath=dev_path
-            )
-            # Get the actual port used (from config or auto-detected)
-            actual_port = self.interface.devPath if hasattr(self.interface, 'devPath') else dev_path
-            self._update_status(True, actual_port)
-            self._log_received(f"Service started - Connected to Meshtastic on {actual_port}")
+            self.interface, conn_type, conn_info = self._create_interface()
+            self.running = True
+            self._update_status(True, conn_info)
+            self._log_received(f"Service started - Connected via {conn_type.upper()} ({conn_info})")
             # Clear and refresh node list
             self.root.after(1000, self._refresh_nodes)
             # Start refresh timer
@@ -1396,15 +1482,10 @@ class MeshtasticAIGui:
     def _do_reconnect(self):
         """Perform the actual reconnection attempt."""
         try:
-            serial_port = self.config.get("serial_port", "")
-            dev_path = serial_port if serial_port else None
-            self.interface = meshtastic.serial_interface.SerialInterface(
-                devPath=dev_path
-            )
-            actual_port = self.interface.devPath if hasattr(self.interface, 'devPath') else dev_path
+            self.interface, conn_type, conn_info = self._create_interface()
             self.running = True
-            self._update_status(True, actual_port)
-            self._log_received(f"Reconnected to Meshtastic on {actual_port}")
+            self._update_status(True, conn_info)
+            self._log_received(f"Reconnected via {conn_type.upper()} ({conn_info})")
             self.root.after(1000, self._refresh_nodes)
             self._start_refresh_timer()
             self._start_session_timer()
