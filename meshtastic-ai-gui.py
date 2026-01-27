@@ -1065,7 +1065,7 @@ class MeshtasticAIGui:
         """Open the radio connection configuration dialog."""
         dialog = tk.Toplevel(self.root)
         dialog.title("Radio Connection")
-        dialog.geometry("450x400")
+        dialog.geometry("480x420")
         dialog.transient(self.root)
         dialog.grab_set()
 
@@ -1349,7 +1349,7 @@ class MeshtasticAIGui:
                         # Show PIN dialog
                         pin_dialog = tk.Toplevel(scan_dialog)
                         pin_dialog.title("Pair Device")
-                        pin_dialog.geometry("420x450")
+                        pin_dialog.geometry("420x520")
                         pin_dialog.transient(scan_dialog)
                         pin_dialog.grab_set()
 
@@ -1696,13 +1696,37 @@ class MeshtasticAIGui:
 
             # Show testing status
             test_status_canvas.itemconfig(test_status_circle, fill="yellow")
-            timeout_hint = " (15s timeout)" if conn_type == "ble" else ""
-            test_label.config(text=f"Testing {conn_type}...{timeout_hint}", foreground="orange")
+            hint = " (checking paired status)" if conn_type == "ble" else ""
+            test_label.config(text=f"Testing {conn_type}...{hint}", foreground="orange")
             dialog.update()
 
             def do_test():
                 import concurrent.futures
+                import subprocess
 
+                # For BLE, just check if device is paired (fast check, no full connection)
+                if conn_type == "ble":
+                    try:
+                        # Check if device is paired
+                        result = subprocess.run(
+                            ["bluetoothctl", "info", test_target],
+                            capture_output=True, text=True, timeout=5
+                        )
+                        if "Paired: yes" in result.stdout:
+                            # Device is paired, check if it's trusted
+                            if "Trusted: yes" in result.stdout:
+                                dialog.after(0, lambda: on_test_success(f"{test_target} (paired & trusted)"))
+                            else:
+                                dialog.after(0, lambda: on_test_success(f"{test_target} (paired)"))
+                        elif "not available" in result.stderr.lower() or "Device" not in result.stdout:
+                            dialog.after(0, lambda: on_test_failure("Device not found. Try pairing first."))
+                        else:
+                            dialog.after(0, lambda: on_test_failure("Device not paired. Use Manage to pair."))
+                    except Exception as e:
+                        dialog.after(0, lambda: on_test_failure(str(e)))
+                    return
+
+                # For Serial/TCP, do full connection test
                 def create_interface():
                     if conn_type == "serial":
                         port_value = serial_port_var.get()
@@ -1710,12 +1734,9 @@ class MeshtasticAIGui:
                         return meshtastic.serial_interface.SerialInterface(devPath=dev_path)
                     elif conn_type == "tcp":
                         return meshtastic.tcp_interface.TCPInterface(hostname=test_target)
-                    elif conn_type == "ble":
-                        return meshtastic.ble_interface.BLEInterface(address=test_target)
 
                 try:
-                    # Use timeout for connection (BLE can hang)
-                    timeout = 15 if conn_type == "ble" else 10
+                    timeout = 10
                     with concurrent.futures.ThreadPoolExecutor() as executor:
                         future = executor.submit(create_interface)
                         test_interface = future.result(timeout=timeout)
@@ -1993,8 +2014,12 @@ class MeshtasticAIGui:
             conn_info = self.config.get("serial_port", "") or "auto"
 
         self._connecting = True
-        self._update_status(False, f"Connecting to {conn_info}...")
-        self._log_received(f"Attempting {conn_type.upper()} connection to {conn_info}...")
+        if conn_type == "ble":
+            self._update_status(False, f"Connecting to {conn_info} (30-45s)...")
+            self._log_received(f"Attempting {conn_type.upper()} connection to {conn_info}... (this can take 30-45 seconds)")
+        else:
+            self._update_status(False, f"Connecting to {conn_info}...")
+            self._log_received(f"Attempting {conn_type.upper()} connection to {conn_info}...")
 
         def connect_thread():
             try:
@@ -2047,6 +2072,11 @@ class MeshtasticAIGui:
             messagebox.showinfo("Info", "Service is not running")
             return
 
+        # Check if already stopping
+        if hasattr(self, '_stopping') and self._stopping:
+            self._log_received("Stop already in progress...")
+            return
+
         # Stop refresh timer
         self._stop_refresh_timer()
         # Stop session timer
@@ -2054,17 +2084,44 @@ class MeshtasticAIGui:
         # Stop connection check
         self._stop_connection_check()
 
-        try:
-            if self.interface:
-                self.interface.close()
-                self.interface = None
-            self._update_status(False)
-            self._log_received("Service stopped")
-            # Clear node list
-            for item in self.node_tree.get_children():
-                self.node_tree.delete(item)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to stop: {e}")
+        # Get connection type to show appropriate message
+        conn_type = self.config.get("connection_type", "serial")
+        if conn_type == "ble":
+            self._log_received("Stopping BLE service... (this may take a few seconds)")
+        else:
+            self._log_received("Stopping service...")
+
+        self._update_status(False, "Stopping...")
+        self._stopping = True
+
+        def stop_thread():
+            try:
+                if self.interface:
+                    self.interface.close()
+                    self.interface = None
+                self.root.after(0, self._on_stop_success)
+            except Exception as e:
+                self.root.after(0, lambda: self._on_stop_failure(str(e)))
+            finally:
+                self._stopping = False
+
+        thread = threading.Thread(target=stop_thread, daemon=True)
+        thread.start()
+
+    def _on_stop_success(self):
+        """Handle successful service stop."""
+        self.running = False
+        self._update_status(False)
+        self._log_received("Service stopped")
+        # Clear node list
+        for item in self.node_tree.get_children():
+            self.node_tree.delete(item)
+
+    def _on_stop_failure(self, error):
+        """Handle stop service failure."""
+        self._log_received(f"Error stopping service: {error}")
+        self._update_status(False)
+        messagebox.showerror("Error", f"Failed to stop: {error}")
 
     def _start_connection_check(self):
         """Start periodic connection health check."""
@@ -2131,7 +2188,10 @@ class MeshtasticAIGui:
 
         conn_type = self.config.get("connection_type", "serial")
         self._connecting = True
-        self._log_received(f"Attempting {conn_type.upper()} reconnection...")
+        if conn_type == "ble":
+            self._log_received(f"Attempting {conn_type.upper()} reconnection... (this can take 30-45 seconds)")
+        else:
+            self._log_received(f"Attempting {conn_type.upper()} reconnection...")
 
         def reconnect_thread():
             try:
