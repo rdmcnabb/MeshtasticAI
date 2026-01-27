@@ -315,7 +315,7 @@ class MeshtasticAIGui:
             # Create mini window
             self.mini_window = tk.Toplevel()
             self.mini_window.title("Mini")
-            self.mini_window.geometry(f"580x30+{x}+{y}")
+            self.mini_window.geometry(f"320x30+{x}+{y}")
             self.mini_window.overrideredirect(True)  # No decorations
             self.mini_window.attributes('-topmost', True)
 
@@ -555,6 +555,8 @@ class MeshtasticAIGui:
 
         # Bind selection event
         self.node_tree.bind("<<TreeviewSelect>>", self._on_node_select)
+        # Bind double-click to show node info
+        self.node_tree.bind("<Double-1>", self._show_node_info)
 
         # Section 1: Messages Received
         received_frame = ttk.LabelFrame(self.main_pane, text="Messages Received")
@@ -753,6 +755,80 @@ class MeshtasticAIGui:
         # Clear treeview selection
         for item in self.node_tree.selection():
             self.node_tree.selection_remove(item)
+
+    def _show_node_info(self, event):
+        """Show detailed information about a node on double-click."""
+        selection = self.node_tree.selection()
+        if not selection:
+            return
+
+        item = selection[0]
+        values = self.node_tree.item(item, "values")
+        if not values:
+            return
+
+        node_id = values[0]
+
+        # Get full node info from interface
+        if not self.interface or not self.running:
+            messagebox.showinfo("Node Info", f"Node ID: {node_id}\n\nService not running.")
+            return
+
+        try:
+            nodes = self.interface.nodes
+            node_info = nodes.get(node_id, {})
+        except Exception:
+            node_info = {}
+
+        if not node_info:
+            messagebox.showinfo("Node Info", f"Node ID: {node_id}\n\nNo additional info available.")
+            return
+
+        # Build info string
+        user = node_info.get("user", {})
+        long_name = user.get("longName", "Unknown")
+        short_name = user.get("shortName", "?")
+        hw_model = user.get("hwModel", "Unknown")
+        mac_addr = user.get("macaddr", "Unknown")
+
+        snr = node_info.get("snr", "N/A")
+        if snr != "N/A" and isinstance(snr, (int, float)):
+            snr = f"{snr:.1f} dB"
+
+        last_heard = node_info.get("lastHeard")
+        if last_heard:
+            last_heard_str = datetime.fromtimestamp(last_heard).strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            last_heard_str = "Never"
+
+        # Position info
+        position = node_info.get("position", {})
+        lat = position.get("latitude", "N/A")
+        lon = position.get("longitude", "N/A")
+        alt = position.get("altitude", "N/A")
+
+        # Format values with padding for centered look
+        def fmt(label, value, width=20):
+            return f"  {label:<14}{str(value):<{width}}  "
+
+        info_text = (
+            f"{'Node Information':^40}\n"
+            f"{'─' * 40}\n\n"
+            f"{fmt('Node ID:', node_id)}\n"
+            f"{fmt('Long Name:', long_name)}\n"
+            f"{fmt('Short Name:', short_name)}\n"
+            f"{fmt('Hardware:', hw_model)}\n"
+            f"{fmt('MAC Address:', mac_addr)}\n\n"
+            f"{fmt('Signal (SNR):', snr)}\n"
+            f"{fmt('Last Heard:', last_heard_str)}\n\n"
+            f"{'Position':^40}\n"
+            f"{'─' * 40}\n"
+            f"{fmt('Latitude:', lat)}\n"
+            f"{fmt('Longitude:', lon)}\n"
+            f"{fmt('Altitude:', alt)}\n"
+        )
+
+        messagebox.showinfo(f"Node: {short_name}", info_text)
 
     def _clear_message_input(self):
         """Clear the message input field."""
