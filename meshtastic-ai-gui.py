@@ -32,6 +32,13 @@ try:
 except ImportError:
     missing_libraries.append(("requests", "requests"))
 
+try:
+    import asyncio
+    from bleak import BleakScanner
+    BLEAK_AVAILABLE = True
+except ImportError:
+    BLEAK_AVAILABLE = False
+
 if missing_libraries:
     print("\n" + "=" * 60)
     print("  MISSING REQUIRED LIBRARIES")
@@ -649,12 +656,17 @@ class MeshtasticAIGui:
         if running:
             self.status_indicator.itemconfig(self.status_circle, fill="green")
             if port:
-                self.status_label.config(text=f"Listening on port: {port}")
+                self.status_label.config(text=f"Connected: {port}")
             else:
-                self.status_label.config(text="Listening")
+                self.status_label.config(text="Connected")
         else:
             self.status_indicator.itemconfig(self.status_circle, fill="red")
-            self.status_label.config(text="Stopped")
+            if port:
+                self.status_label.config(text=port)  # Show "Connecting..." messages
+            else:
+                self.status_label.config(text="Stopped")
+        # Force UI refresh
+        self.root.update_idletasks()
 
     def _apply_theme(self, theme_name):
         """Apply a color theme to the application."""
@@ -1053,7 +1065,7 @@ class MeshtasticAIGui:
         """Open the radio connection configuration dialog."""
         dialog = tk.Toplevel(self.root)
         dialog.title("Radio Connection")
-        dialog.geometry("450x350")
+        dialog.geometry("450x400")
         dialog.transient(self.root)
         dialog.grab_set()
 
@@ -1133,10 +1145,500 @@ class MeshtasticAIGui:
                 ttk.Label(settings_frame, text="Enter the Bluetooth address or name.\nExample: AA:BB:CC:DD:EE:FF",
                           foreground="gray").grid(row=1, column=0, columnspan=2, sticky="w", pady=5)
 
-                # Scan button (for future use)
+                # Scan/Manage button
                 def scan_ble():
-                    messagebox.showinfo("BLE Scan", "BLE scanning not yet implemented.\nPlease enter the address manually.")
-                ttk.Button(settings_frame, text="Scan...", command=scan_ble).grid(row=0, column=2, padx=5)
+                    if not BLEAK_AVAILABLE:
+                        messagebox.showwarning("BLE Scan", "BLE scanning requires the 'bleak' library.\nInstall with: pip install bleak")
+                        return
+
+                    # Create BLE management dialog
+                    scan_dialog = tk.Toplevel(dialog)
+                    scan_dialog.title("BLE Device Manager")
+                    scan_dialog.geometry("500x450")
+                    scan_dialog.transient(dialog)
+                    scan_dialog.grab_set()
+
+                    main_frame = ttk.Frame(scan_dialog, padding=10)
+                    main_frame.pack(fill=tk.BOTH, expand=True)
+
+                    # Store devices
+                    paired_devices = []
+                    scanned_devices = []
+
+                    # === PAIRED DEVICES SECTION ===
+                    ttk.Label(main_frame, text="Paired Devices", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+
+                    paired_frame = ttk.Frame(main_frame)
+                    paired_frame.pack(fill=tk.X, pady=5)
+
+                    paired_listbox = tk.Listbox(paired_frame, height=5, font=("TkFixedFont", 9))
+                    paired_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+                    paired_scroll = ttk.Scrollbar(paired_frame, orient=tk.VERTICAL, command=paired_listbox.yview)
+                    paired_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+                    paired_listbox.config(yscrollcommand=paired_scroll.set)
+
+                    def get_paired_devices():
+                        """Get list of paired Bluetooth devices using bluetoothctl."""
+                        try:
+                            import subprocess
+                            result = subprocess.run(
+                                ["bluetoothctl", "paired-devices"],
+                                capture_output=True, text=True, timeout=5
+                            )
+                            devices = []
+                            for line in result.stdout.strip().split('\n'):
+                                if line.startswith("Device "):
+                                    parts = line.split(" ", 2)
+                                    if len(parts) >= 3:
+                                        addr = parts[1]
+                                        name = parts[2]
+                                        devices.append({"address": addr, "name": name})
+                            return devices
+                        except Exception as e:
+                            return []
+
+                    def refresh_paired():
+                        paired_listbox.delete(0, tk.END)
+                        paired_devices.clear()
+                        devices = get_paired_devices()
+                        for d in devices:
+                            name = d["name"]
+                            # Highlight Meshtastic devices
+                            if "meshtastic" in name.lower() or "mesh" in name.lower():
+                                display = f"[MESH] {name} ({d['address']})"
+                            else:
+                                display = f"{name} ({d['address']})"
+                            paired_listbox.insert(tk.END, display)
+                            paired_devices.append(d)
+                        if not devices:
+                            paired_listbox.insert(tk.END, "(No paired devices found)")
+
+                    # Paired devices buttons
+                    paired_btn_frame = ttk.Frame(main_frame)
+                    paired_btn_frame.pack(fill=tk.X, pady=5)
+
+                    def select_paired():
+                        selection = paired_listbox.curselection()
+                        if not selection or not paired_devices:
+                            return
+                        idx = selection[0]
+                        if idx < len(paired_devices):
+                            ble_address_var.set(paired_devices[idx]["address"])
+                            scan_dialog.destroy()
+
+                    def unpair_device():
+                        selection = paired_listbox.curselection()
+                        if not selection or not paired_devices:
+                            return
+                        idx = selection[0]
+                        if idx < len(paired_devices):
+                            addr = paired_devices[idx]["address"]
+                            name = paired_devices[idx]["name"]
+                            if messagebox.askyesno("Unpair Device", f"Remove pairing for {name}?"):
+                                try:
+                                    import subprocess
+                                    subprocess.run(["bluetoothctl", "remove", addr], timeout=5)
+                                    refresh_paired()
+                                except Exception as e:
+                                    messagebox.showerror("Error", f"Failed to unpair: {e}")
+
+                    ttk.Button(paired_btn_frame, text="Use Selected", command=select_paired).pack(side=tk.LEFT, padx=2)
+                    ttk.Button(paired_btn_frame, text="Refresh", command=refresh_paired).pack(side=tk.LEFT, padx=2)
+                    ttk.Button(paired_btn_frame, text="Unpair", command=unpair_device).pack(side=tk.LEFT, padx=2)
+
+                    # === SEPARATOR ===
+                    ttk.Separator(main_frame, orient="horizontal").pack(fill=tk.X, pady=10)
+
+                    # === SCAN FOR NEW DEVICES SECTION ===
+                    ttk.Label(main_frame, text="Scan for New Devices", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+
+                    scan_frame = ttk.Frame(main_frame)
+                    scan_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
+                    scanned_listbox = tk.Listbox(scan_frame, height=6, font=("TkFixedFont", 9))
+                    scanned_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+                    scan_scroll = ttk.Scrollbar(scan_frame, orient=tk.VERTICAL, command=scanned_listbox.yview)
+                    scan_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+                    scanned_listbox.config(yscrollcommand=scan_scroll.set)
+
+                    status_label = ttk.Label(main_frame, text="Click 'Scan' to find nearby devices", foreground="gray")
+                    status_label.pack(pady=5)
+
+                    def do_scan():
+                        async def scan_async():
+                            try:
+                                devices = await BleakScanner.discover(timeout=5.0)
+                                return devices
+                            except Exception as e:
+                                return str(e)
+                        try:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            result = loop.run_until_complete(scan_async())
+                            loop.close()
+                            return result
+                        except Exception as e:
+                            return str(e)
+
+                    def on_scan_complete(devices):
+                        if isinstance(devices, str):
+                            status_label.config(text=f"Scan error: {devices}", foreground="red")
+                            return
+
+                        scanned_listbox.delete(0, tk.END)
+                        scanned_devices.clear()
+
+                        # Get paired addresses to filter them out
+                        paired_addrs = {d["address"].upper() for d in paired_devices}
+
+                        # Filter for unpaired devices with names
+                        meshtastic = []
+                        others = []
+                        for d in devices:
+                            if d.address.upper() in paired_addrs:
+                                continue  # Skip already paired
+                            if not d.name:
+                                continue  # Skip unnamed
+                            if "meshtastic" in d.name.lower() or "mesh" in d.name.lower():
+                                meshtastic.append(d)
+                            else:
+                                others.append(d)
+
+                        for d in meshtastic:
+                            scanned_listbox.insert(tk.END, f"[MESH] {d.name} ({d.address})")
+                            scanned_devices.append(d)
+
+                        if meshtastic and others:
+                            scanned_listbox.insert(tk.END, "--- Other devices ---")
+                            scanned_devices.append(None)
+
+                        for d in others:
+                            scanned_listbox.insert(tk.END, f"{d.name} ({d.address})")
+                            scanned_devices.append(d)
+
+                        total = len(meshtastic) + len(others)
+                        status_label.config(
+                            text=f"Found {total} new devices ({len(meshtastic)} Meshtastic)",
+                            foreground="green" if meshtastic else "black"
+                        )
+
+                    def run_scan():
+                        status_label.config(text="Scanning... (5 seconds)", foreground="blue")
+                        scan_dialog.update()
+                        def scan_thread():
+                            devices = do_scan()
+                            scan_dialog.after(0, lambda: on_scan_complete(devices))
+                        thread = threading.Thread(target=scan_thread, daemon=True)
+                        thread.start()
+
+                    def pair_device():
+                        selection = scanned_listbox.curselection()
+                        if not selection:
+                            messagebox.showwarning("Pair", "Select a device to pair")
+                            return
+                        idx = selection[0]
+                        if idx >= len(scanned_devices) or scanned_devices[idx] is None:
+                            return
+
+                        device = scanned_devices[idx]
+                        addr = device.address
+                        name = device.name
+
+                        # Show PIN dialog
+                        pin_dialog = tk.Toplevel(scan_dialog)
+                        pin_dialog.title("Pair Device")
+                        pin_dialog.geometry("420x450")
+                        pin_dialog.transient(scan_dialog)
+                        pin_dialog.grab_set()
+
+                        pin_frame = ttk.Frame(pin_dialog, padding=15)
+                        pin_frame.pack(fill=tk.BOTH, expand=True)
+
+                        ttk.Label(pin_frame, text=f"Pairing with: {name}", font=("TkDefaultFont", 10, "bold")).pack(pady=(0, 15))
+
+                        # Pairing mode selection
+                        mode_frame = ttk.LabelFrame(pin_frame, text="Pairing Mode", padding=10)
+                        mode_frame.pack(fill=tk.X, pady=(0, 15))
+
+                        pair_mode = tk.StringVar(value="fixed")
+
+                        ttk.Radiobutton(mode_frame, text="Fixed PIN (default: 123456)",
+                                       variable=pair_mode, value="fixed").pack(anchor="w", pady=2)
+                        ttk.Radiobutton(mode_frame, text="Radio will display PIN (2-step process)",
+                                       variable=pair_mode, value="display").pack(anchor="w", pady=2)
+                        ttk.Radiobutton(mode_frame, text="No PIN required",
+                                       variable=pair_mode, value="none").pack(anchor="w", pady=2)
+
+                        # PIN entry
+                        pin_entry_frame = ttk.Frame(pin_frame)
+                        pin_entry_frame.pack(fill=tk.X, pady=15)
+
+                        ttk.Label(pin_entry_frame, text="PIN Code:").pack(side=tk.LEFT, padx=(0, 10))
+                        pin_var = tk.StringVar(value="123456")
+                        pin_entry = ttk.Entry(pin_entry_frame, textvariable=pin_var, width=12, font=("TkFixedFont", 16))
+                        pin_entry.pack(side=tk.LEFT)
+
+                        help_text = ("• Fixed PIN: Enter known PIN (usually 123456), then click Pair\n"
+                                    "• Radio displays: Click 'Request PIN' first, read PIN from radio,\n"
+                                    "  enter it above, then click 'Send PIN'\n"
+                                    "• No PIN: Just click Pair")
+                        ttk.Label(pin_frame, text=help_text, foreground="gray",
+                                 font=("TkDefaultFont", 9), justify=tk.LEFT).pack(pady=10, anchor="w")
+
+                        pair_status = ttk.Label(pin_frame, text="", foreground="blue", font=("TkDefaultFont", 10))
+                        pair_status.pack(pady=10)
+
+                        # Store the pairing process for 2-step mode
+                        pair_process = {"proc": None, "waiting_for_pin": False}
+
+                        def request_pin():
+                            """Step 1 for display mode: Request pairing to make radio show PIN."""
+                            pair_status.config(text="Requesting PIN from radio...\nCheck radio screen for PIN!", foreground="orange")
+                            pin_var.set("")  # Clear PIN field for user to enter
+                            pin_dialog.update()
+
+                            def request_thread():
+                                try:
+                                    import subprocess
+                                    import time
+
+                                    # Step 1: Power on
+                                    subprocess.run(["bluetoothctl", "power", "on"], timeout=5, capture_output=True)
+
+                                    # Step 2: Start bluetoothctl session
+                                    pair_process["proc"] = subprocess.Popen(
+                                        ["bluetoothctl"],
+                                        stdin=subprocess.PIPE,
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT,
+                                        text=True
+                                    )
+
+                                    # Step 3: Set up agent (matches your working steps exactly)
+                                    pair_process["proc"].stdin.write("agent KeyboardOnly\n")
+                                    pair_process["proc"].stdin.flush()
+                                    time.sleep(0.5)
+
+                                    pair_process["proc"].stdin.write("default-agent\n")
+                                    pair_process["proc"].stdin.flush()
+                                    time.sleep(0.5)
+
+                                    # Step 4: Start scanning
+                                    pair_process["proc"].stdin.write("scan on\n")
+                                    pair_process["proc"].stdin.flush()
+
+                                    # Step 5: Wait for device to be discovered (longer wait)
+                                    pin_dialog.after(0, lambda: pair_status.config(
+                                        text="Scanning for device...", foreground="blue"))
+                                    time.sleep(5)
+
+                                    # Step 6: Pair
+                                    pair_process["proc"].stdin.write(f"pair {addr}\n")
+                                    pair_process["proc"].stdin.flush()
+                                    pair_process["waiting_for_pin"] = True
+
+                                    pin_dialog.after(0, lambda: pair_status.config(
+                                        text="PIN requested!\nCheck your radio screen for PIN,\nenter it above, then click 'Send PIN'",
+                                        foreground="green"))
+                                except Exception as e:
+                                    pin_dialog.after(0, lambda: pair_status.config(
+                                        text=f"Error: {str(e)[:40]}", foreground="red"))
+
+                            thread = threading.Thread(target=request_thread, daemon=True)
+                            thread.start()
+
+                        def send_pin():
+                            """Step 2 for display mode: Send the PIN user entered."""
+                            if not pair_process["waiting_for_pin"] or not pair_process["proc"]:
+                                pair_status.config(text="Click 'Request PIN' first!", foreground="red")
+                                return
+
+                            pin = pin_var.get()
+                            if not pin:
+                                pair_status.config(text="Please enter the PIN from your radio", foreground="red")
+                                return
+
+                            pair_status.config(text="Sending PIN...", foreground="blue")
+                            pin_dialog.update()
+
+                            def send_thread():
+                                try:
+                                    import subprocess
+                                    import time
+
+                                    proc = pair_process["proc"]
+
+                                    # Send just the PIN
+                                    proc.stdin.write(f"{pin}\n")
+                                    proc.stdin.flush()
+
+                                    # Wait for pairing to complete
+                                    time.sleep(4)
+
+                                    # Trust the device
+                                    proc.stdin.write(f"trust {addr}\n")
+                                    proc.stdin.flush()
+                                    time.sleep(1)
+
+                                    # Kill the bluetoothctl process (don't wait for quit)
+                                    try:
+                                        proc.terminate()
+                                        proc.wait(timeout=2)
+                                    except:
+                                        try:
+                                            proc.kill()
+                                        except:
+                                            pass
+
+                                    pair_process["waiting_for_pin"] = False
+                                    pair_process["proc"] = None
+
+                                    # Verify pairing using fresh command
+                                    time.sleep(1)
+                                    check = subprocess.run(
+                                        ["bluetoothctl", "paired-devices"],
+                                        capture_output=True, text=True, timeout=5
+                                    )
+                                    if addr.upper() in check.stdout.upper():
+                                        pin_dialog.after(0, on_pair_success)
+                                    else:
+                                        pin_dialog.after(0, lambda: on_pair_failure("Pairing not confirmed. Try again."))
+                                except Exception as e:
+                                    pin_dialog.after(0, lambda: on_pair_failure(str(e)))
+
+                            thread = threading.Thread(target=send_thread, daemon=True)
+                            thread.start()
+
+                        def do_pair():
+                            mode = pair_mode.get()
+                            if mode == "display":
+                                # For display mode, user should use Request PIN / Send PIN buttons
+                                pair_status.config(text="Use 'Request PIN' button first for this mode", foreground="orange")
+                                return
+
+                            if mode == "none":
+                                pair_status.config(text="Pairing without PIN...", foreground="blue")
+                            else:
+                                pair_status.config(text="Pairing with PIN...", foreground="blue")
+                            pin_dialog.update()
+
+                            def pair_thread():
+                                try:
+                                    import subprocess
+                                    import time
+
+                                    mode = pair_mode.get()
+                                    pin = pin_var.get() if mode != "none" else ""
+
+                                    # Step 1: Power on Bluetooth
+                                    subprocess.run(["bluetoothctl", "power", "on"], timeout=5, capture_output=True)
+
+                                    # Step 2: Remove any existing pairing first
+                                    subprocess.run(["bluetoothctl", "remove", addr], timeout=5, capture_output=True)
+                                    time.sleep(0.5)
+
+                                    # Step 3: Set up agent based on mode
+                                    pair_proc = subprocess.Popen(
+                                        ["bluetoothctl"],
+                                        stdin=subprocess.PIPE,
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT,
+                                        text=True
+                                    )
+
+                                    if mode == "none":
+                                        # NoInputNoOutput agent for no PIN
+                                        commands = f"agent NoInputNoOutput\ndefault-agent\nscan on\n"
+                                    else:
+                                        # KeyboardOnly agent for PIN entry
+                                        commands = f"agent KeyboardOnly\ndefault-agent\nscan on\n"
+
+                                    pair_proc.stdin.write(commands)
+                                    pair_proc.stdin.flush()
+
+                                    # Wait for device to be discovered
+                                    time.sleep(3)
+
+                                    # Now pair
+                                    pair_proc.stdin.write(f"pair {addr}\n")
+                                    pair_proc.stdin.flush()
+
+                                    # Wait for pairing prompt
+                                    time.sleep(3)
+
+                                    # Send PIN if required
+                                    if mode != "none" and pin:
+                                        pair_proc.stdin.write(f"{pin}\n")
+                                        pair_proc.stdin.flush()
+                                        time.sleep(1)
+                                        # Sometimes need to confirm
+                                        pair_proc.stdin.write("yes\n")
+                                        pair_proc.stdin.flush()
+
+                                    time.sleep(2)
+
+                                    # Trust the device
+                                    pair_proc.stdin.write(f"trust {addr}\nquit\n")
+                                    pair_proc.stdin.flush()
+
+                                    stdout, _ = pair_proc.communicate(timeout=15)
+
+                                    # Check if pairing succeeded by verifying paired devices
+                                    time.sleep(1)
+                                    check = subprocess.run(
+                                        ["bluetoothctl", "paired-devices"],
+                                        capture_output=True, text=True, timeout=5
+                                    )
+
+                                    if addr.upper() in check.stdout.upper():
+                                        pin_dialog.after(0, on_pair_success)
+                                    else:
+                                        pin_dialog.after(0, lambda: on_pair_failure("Device not in paired list. Check PIN or try again."))
+
+                                except subprocess.TimeoutExpired:
+                                    pin_dialog.after(0, lambda: on_pair_failure("Pairing timed out"))
+                                except Exception as e:
+                                    pin_dialog.after(0, lambda: on_pair_failure(str(e)))
+
+                            def on_pair_success():
+                                pair_status.config(text="Paired successfully!", foreground="green")
+                                pin_dialog.after(1500, pin_dialog.destroy)
+                                refresh_paired()
+
+                            def on_pair_failure(error):
+                                pair_status.config(text=f"Failed: {error[:40]}", foreground="red")
+
+                            thread = threading.Thread(target=pair_thread, daemon=True)
+                            thread.start()
+
+                        # Buttons for 2-step process (display mode)
+                        step_btn_frame = ttk.Frame(pin_frame)
+                        step_btn_frame.pack(pady=5)
+                        ttk.Button(step_btn_frame, text="1. Request PIN", command=request_pin, width=14).pack(side=tk.LEFT, padx=5)
+                        ttk.Button(step_btn_frame, text="2. Send PIN", command=send_pin, width=14).pack(side=tk.LEFT, padx=5)
+
+                        # Buttons for fixed/no PIN modes
+                        btn_frame = ttk.Frame(pin_frame)
+                        btn_frame.pack(pady=10)
+                        ttk.Button(btn_frame, text="Pair", command=do_pair, width=10).pack(side=tk.LEFT, padx=10)
+                        ttk.Button(btn_frame, text="Cancel", command=pin_dialog.destroy, width=10).pack(side=tk.LEFT, padx=10)
+
+                    # Scan buttons
+                    scan_btn_frame = ttk.Frame(main_frame)
+                    scan_btn_frame.pack(fill=tk.X, pady=5)
+
+                    ttk.Button(scan_btn_frame, text="Scan", command=run_scan).pack(side=tk.LEFT, padx=2)
+                    ttk.Button(scan_btn_frame, text="Pair Selected", command=pair_device).pack(side=tk.LEFT, padx=2)
+
+                    # Close button
+                    ttk.Button(main_frame, text="Close", command=scan_dialog.destroy).pack(pady=10)
+
+                    # Initial load of paired devices
+                    refresh_paired()
+
+                ttk.Button(settings_frame, text="Manage...", command=scan_ble).grid(row=0, column=2, padx=5)
 
         # Initialize fields
         update_fields()
@@ -1158,6 +1660,93 @@ class MeshtasticAIGui:
         reconnect_frame.grid(row=5, column=0, columnspan=2, sticky="w", pady=10)
         auto_reconnect_var = tk.BooleanVar(value=self.config.get("auto_reconnect", True))
         ttk.Checkbutton(reconnect_frame, text="Auto-reconnect on disconnect", variable=auto_reconnect_var).pack()
+
+        # Test connection section
+        test_frame = ttk.Frame(frame)
+        test_frame.grid(row=6, column=0, columnspan=2, sticky="w", pady=10)
+
+        test_status_canvas = tk.Canvas(test_frame, width=16, height=16)
+        test_status_canvas.pack(side=tk.LEFT, padx=(0, 8))
+        test_status_circle = test_status_canvas.create_oval(2, 2, 14, 14, fill="gray")
+
+        test_label = ttk.Label(test_frame, text="Not tested", foreground="gray")
+        test_label.pack(side=tk.LEFT, padx=(0, 10))
+
+        def test_connection():
+            conn_type = conn_type_var.get()
+
+            # Get connection parameters based on type
+            if conn_type == "serial":
+                port_value = serial_port_var.get()
+                if port_value == "(Auto-detect)":
+                    port_value = None
+                test_target = port_value or "auto-detect"
+            elif conn_type == "tcp":
+                test_target = tcp_host_var.get()
+                if not test_target:
+                    test_status_canvas.itemconfig(test_status_circle, fill="red")
+                    test_label.config(text="No IP address entered", foreground="red")
+                    return
+            elif conn_type == "ble":
+                test_target = ble_address_var.get()
+                if not test_target:
+                    test_status_canvas.itemconfig(test_status_circle, fill="red")
+                    test_label.config(text="No BLE address entered", foreground="red")
+                    return
+
+            # Show testing status
+            test_status_canvas.itemconfig(test_status_circle, fill="yellow")
+            timeout_hint = " (15s timeout)" if conn_type == "ble" else ""
+            test_label.config(text=f"Testing {conn_type}...{timeout_hint}", foreground="orange")
+            dialog.update()
+
+            def do_test():
+                import concurrent.futures
+
+                def create_interface():
+                    if conn_type == "serial":
+                        port_value = serial_port_var.get()
+                        dev_path = None if port_value == "(Auto-detect)" else port_value
+                        return meshtastic.serial_interface.SerialInterface(devPath=dev_path)
+                    elif conn_type == "tcp":
+                        return meshtastic.tcp_interface.TCPInterface(hostname=test_target)
+                    elif conn_type == "ble":
+                        return meshtastic.ble_interface.BLEInterface(address=test_target)
+
+                try:
+                    # Use timeout for connection (BLE can hang)
+                    timeout = 15 if conn_type == "ble" else 10
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(create_interface)
+                        test_interface = future.result(timeout=timeout)
+
+                    # Success - close the test interface
+                    test_interface.close()
+                    dialog.after(0, lambda: on_test_success(test_target))
+                except concurrent.futures.TimeoutError:
+                    dialog.after(0, lambda: on_test_failure(f"Connection timed out ({timeout}s)"))
+                except Exception as e:
+                    dialog.after(0, lambda: on_test_failure(str(e)))
+
+            def on_test_success(target):
+                # Check if already in use by our service
+                test_status_canvas.itemconfig(test_status_circle, fill="green")
+                test_label.config(text=f"Connected to {target}", foreground="green")
+
+            def on_test_failure(error):
+                # Check if error is because port is in use by our service
+                if self.running and ("busy" in error.lower() or "in use" in error.lower() or "resource" in error.lower()):
+                    test_status_canvas.itemconfig(test_status_circle, fill="green")
+                    test_label.config(text="In use by active connection", foreground="green")
+                else:
+                    test_status_canvas.itemconfig(test_status_circle, fill="red")
+                    test_label.config(text=f"Failed: {error[:30]}...", foreground="red")
+
+            # Run test in thread to keep UI responsive
+            thread = threading.Thread(target=do_test, daemon=True)
+            thread.start()
+
+        ttk.Button(test_frame, text="Test Connection", command=test_connection).pack(side=tk.LEFT)
 
         # Buttons
         button_frame = ttk.Frame(dialog)
@@ -1367,6 +1956,16 @@ class MeshtasticAIGui:
             ble_address = self.config.get("ble_address", "")
             if not ble_address:
                 raise ValueError("BLE address not configured. Please set the address in Radio Connection settings.")
+
+            # Ensure Bluetooth is on, but DON'T connect - let meshtastic handle it
+            import subprocess
+            try:
+                subprocess.run(["bluetoothctl", "power", "on"], timeout=5, capture_output=True)
+                # Disconnect any existing OS-level connection so meshtastic can connect
+                subprocess.run(["bluetoothctl", "disconnect", ble_address], timeout=5, capture_output=True)
+            except Exception:
+                pass
+
             interface = meshtastic.ble_interface.BLEInterface(address=ble_address)
             conn_info = ble_address
         else:
@@ -1380,25 +1979,70 @@ class MeshtasticAIGui:
             messagebox.showinfo("Info", "Service is already running")
             return
 
-        try:
-            self.interface, conn_type, conn_info = self._create_interface()
-            self.running = True
-            self._update_status(True, conn_info)
-            self._log_received(f"Service started - Connected via {conn_type.upper()} ({conn_info})")
-            # Clear and refresh node list
-            self.root.after(1000, self._refresh_nodes)
-            # Start refresh timer
-            self._start_refresh_timer()
-            # Start session timer
-            self._start_session_timer()
-            # Start connection health check
-            self._start_connection_check()
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to connect: {e}")
-            self._update_status(False)
+        if hasattr(self, '_connecting') and self._connecting:
+            messagebox.showinfo("Info", "Connection attempt in progress...")
+            return
+
+        # Get connection info for status display
+        conn_type = self.config.get("connection_type", "serial")
+        if conn_type == "tcp":
+            conn_info = self.config.get("tcp_host", "")
+        elif conn_type == "ble":
+            conn_info = self.config.get("ble_address", "")
+        else:
+            conn_info = self.config.get("serial_port", "") or "auto"
+
+        self._connecting = True
+        self._update_status(False, f"Connecting to {conn_info}...")
+        self._log_received(f"Attempting {conn_type.upper()} connection to {conn_info}...")
+
+        def connect_thread():
+            try:
+                interface, conn_type, conn_info = self._create_interface()
+                # Schedule UI update on main thread - use default args to capture values
+                self.root.after(0, lambda i=interface, t=conn_type, c=conn_info: self._on_connect_success(i, t, c))
+            except Exception as e:
+                error_msg = str(e)
+                self.root.after(0, lambda msg=error_msg: self._on_connect_failure(msg))
+            finally:
+                # Ensure _connecting is always reset
+                self._connecting = False
+
+        thread = threading.Thread(target=connect_thread, daemon=True)
+        thread.start()
+
+    def _on_connect_success(self, interface, conn_type, conn_info):
+        """Handle successful connection (called on main thread)."""
+        self._connecting = False
+        self.interface = interface
+        self.running = True
+        self._update_status(True, conn_info)
+        self._log_received(f"Service started - Connected via {conn_type.upper()} ({conn_info})")
+        # Clear and refresh node list
+        self.root.after(1000, self._refresh_nodes)
+        # Start refresh timer
+        self._start_refresh_timer()
+        # Start session timer
+        self._start_session_timer()
+        # Start connection health check
+        self._start_connection_check()
+
+    def _on_connect_failure(self, error_msg):
+        """Handle connection failure (called on main thread)."""
+        self._connecting = False
+        self._update_status(False)
+        self._log_received(f"Connection failed: {error_msg}")
+        messagebox.showerror("Connection Error", f"Failed to connect:\n{error_msg}")
 
     def stop_service(self):
         """Stop the Meshtastic listener service."""
+        # Cancel any pending connection attempt
+        if hasattr(self, '_connecting') and self._connecting:
+            self._connecting = False
+            self._update_status(False)
+            self._log_received("Connection attempt cancelled")
+            return
+
         if not self.running:
             messagebox.showinfo("Info", "Service is not running")
             return
@@ -1481,20 +2125,43 @@ class MeshtasticAIGui:
 
     def _do_reconnect(self):
         """Perform the actual reconnection attempt."""
-        try:
-            self.interface, conn_type, conn_info = self._create_interface()
-            self.running = True
-            self._update_status(True, conn_info)
-            self._log_received(f"Reconnected via {conn_type.upper()} ({conn_info})")
-            self.root.after(1000, self._refresh_nodes)
-            self._start_refresh_timer()
-            self._start_session_timer()
-            self._start_connection_check()
-        except Exception as e:
-            self._log_received(f"Reconnect failed: {e} - retrying in 5 seconds...")
-            # Retry in 5 seconds if auto-reconnect is still enabled
-            if self.config.get("auto_reconnect", True):
-                self.root.after(5000, self._do_reconnect)
+        if hasattr(self, '_connecting') and self._connecting:
+            # Already trying to connect, skip
+            return
+
+        conn_type = self.config.get("connection_type", "serial")
+        self._connecting = True
+        self._log_received(f"Attempting {conn_type.upper()} reconnection...")
+
+        def reconnect_thread():
+            try:
+                interface, conn_type, conn_info = self._create_interface()
+                self.root.after(0, lambda: self._on_reconnect_success(interface, conn_type, conn_info))
+            except Exception as e:
+                self.root.after(0, lambda: self._on_reconnect_failure(str(e)))
+
+        thread = threading.Thread(target=reconnect_thread, daemon=True)
+        thread.start()
+
+    def _on_reconnect_success(self, interface, conn_type, conn_info):
+        """Handle successful reconnection (called on main thread)."""
+        self._connecting = False
+        self.interface = interface
+        self.running = True
+        self._update_status(True, conn_info)
+        self._log_received(f"Reconnected via {conn_type.upper()} ({conn_info})")
+        self.root.after(1000, self._refresh_nodes)
+        self._start_refresh_timer()
+        self._start_session_timer()
+        self._start_connection_check()
+
+    def _on_reconnect_failure(self, error_msg):
+        """Handle reconnection failure (called on main thread)."""
+        self._connecting = False
+        self._log_received(f"Reconnect failed: {error_msg} - retrying in 5 seconds...")
+        # Retry in 5 seconds if auto-reconnect is still enabled
+        if self.config.get("auto_reconnect", True):
+            self.root.after(5000, self._do_reconnect)
 
     def send_message(self):
         """Send a message to the mesh network."""
