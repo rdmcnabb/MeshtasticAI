@@ -435,7 +435,25 @@ class MeshtasticAIGui:
         # Help menu
         help_menu = tk.Menu(self.menubar, tearoff=0)
         self.menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="Keyboard Shortcuts", command=self._show_shortcuts)
+        help_menu.add_separator()
         help_menu.add_command(label="About", command=self._show_about)
+
+    def _show_shortcuts(self):
+        """Show the keyboard shortcuts dialog."""
+        shortcuts_text = (
+            "Keyboard Shortcuts\n"
+            "─────────────────────\n\n"
+            "Ctrl+Enter    Send message\n"
+            "Ctrl+M        Toggle mini mode\n"
+            "Escape        Clear message input\n\n"
+            "Mouse Actions\n"
+            "─────────────────────\n\n"
+            "Right-click Rx/Tx    Reset counters\n"
+            "Click node           Select for DM\n"
+            "Double-click node    View node info"
+        )
+        messagebox.showinfo("Keyboard Shortcuts", shortcuts_text)
 
     def _show_about(self):
         """Show the About dialog."""
