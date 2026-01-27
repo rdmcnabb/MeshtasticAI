@@ -88,7 +88,7 @@ import time
 from datetime import datetime
 
 # ================= CONSTANTS =================
-VERSION = "2.4.0"
+VERSION = "2.6.0"
 MAX_MESSAGE_BYTES = 200  # Meshtastic message size limit
 OLLAMA_TIMEOUT = 90  # Seconds to wait for AI response
 NODE_REFRESH_INTERVAL = 30000  # Milliseconds between node list refreshes
@@ -101,6 +101,7 @@ DEFAULT_CONFIG = {
     "serial_port": "",  # Empty = auto-detect
     "tcp_host": "",  # IP address or hostname for TCP connection
     "ble_address": "",  # Bluetooth device address
+    "ble_retries": 1,  # Number of auto-retries for BLE connection
     "auto_start": True,  # Auto-start service on launch
     "ai_enabled": True,  # Enable/disable AI features
     "ai_prefix": "/AI",
@@ -1145,6 +1146,13 @@ class MeshtasticAIGui:
                 ttk.Label(settings_frame, text="Enter the Bluetooth address or name.\nExample: AA:BB:CC:DD:EE:FF",
                           foreground="gray").grid(row=1, column=0, columnspan=2, sticky="w", pady=5)
 
+                # BLE Retries setting
+                ttk.Label(settings_frame, text="Retries:").grid(row=2, column=0, sticky="w", pady=5)
+                ble_retries_var = tk.StringVar(value=str(self.config.get("ble_retries", 1)))
+                retries_spin = ttk.Spinbox(settings_frame, from_=0, to=5, textvariable=ble_retries_var, width=5)
+                retries_spin.grid(row=2, column=1, sticky="w", pady=5, padx=5)
+                widgets["ble_retries"] = ble_retries_var
+
                 # Scan/Manage button
                 def scan_ble():
                     if not BLEAK_AVAILABLE:
@@ -1366,7 +1374,7 @@ class MeshtasticAIGui:
 
                         ttk.Radiobutton(mode_frame, text="Fixed PIN (default: 123456)",
                                        variable=pair_mode, value="fixed").pack(anchor="w", pady=2)
-                        ttk.Radiobutton(mode_frame, text="Radio will display PIN (2-step process)",
+                        ttk.Radiobutton(mode_frame, text="Radio will display PIN",
                                        variable=pair_mode, value="display").pack(anchor="w", pady=2)
                         ttk.Radiobutton(mode_frame, text="No PIN required",
                                        variable=pair_mode, value="none").pack(anchor="w", pady=2)
@@ -1375,17 +1383,15 @@ class MeshtasticAIGui:
                         pin_entry_frame = ttk.Frame(pin_frame)
                         pin_entry_frame.pack(fill=tk.X, pady=15)
 
-                        ttk.Label(pin_entry_frame, text="PIN Code:").pack(side=tk.LEFT, padx=(0, 10))
+                        pin_label = ttk.Label(pin_entry_frame, text="PIN Code:")
+                        pin_label.pack(side=tk.LEFT, padx=(0, 10))
                         pin_var = tk.StringVar(value="123456")
                         pin_entry = ttk.Entry(pin_entry_frame, textvariable=pin_var, width=12, font=("TkFixedFont", 16))
                         pin_entry.pack(side=tk.LEFT)
 
-                        help_text = ("• Fixed PIN: Enter known PIN (usually 123456), then click Pair\n"
-                                    "• Radio displays: Click 'Request PIN' first, read PIN from radio,\n"
-                                    "  enter it above, then click 'Send PIN'\n"
-                                    "• No PIN: Just click Pair")
-                        ttk.Label(pin_frame, text=help_text, foreground="gray",
-                                 font=("TkDefaultFont", 9), justify=tk.LEFT).pack(pady=10, anchor="w")
+                        help_label = ttk.Label(pin_frame, text="", foreground="gray",
+                                 font=("TkDefaultFont", 9), justify=tk.LEFT)
+                        help_label.pack(pady=10, anchor="w")
 
                         pair_status = ttk.Label(pin_frame, text="", foreground="blue", font=("TkDefaultFont", 10))
                         pair_status.pack(pady=10)
@@ -1514,9 +1520,18 @@ class MeshtasticAIGui:
                         def do_pair():
                             mode = pair_mode.get()
                             if mode == "display":
-                                # For display mode, user should use Request PIN / Send PIN buttons
-                                pair_status.config(text="Use 'Request PIN' button first for this mode", foreground="orange")
-                                return
+                                # For display mode, check if we're waiting for PIN (Request was clicked)
+                                if pair_process["waiting_for_pin"] and pair_process["proc"]:
+                                    # User clicked Request PIN, now send the entered PIN
+                                    pin = pin_var.get()
+                                    if not pin:
+                                        pair_status.config(text="Please enter the PIN from your radio", foreground="red")
+                                        return
+                                    send_pin()
+                                    return
+                                else:
+                                    pair_status.config(text="Click 'Request PIN' first to see PIN on radio", foreground="orange")
+                                    return
 
                             if mode == "none":
                                 pair_status.config(text="Pairing without PIN...", foreground="blue")
@@ -1616,14 +1631,48 @@ class MeshtasticAIGui:
                         # Buttons for 2-step process (display mode)
                         step_btn_frame = ttk.Frame(pin_frame)
                         step_btn_frame.pack(pady=5)
-                        ttk.Button(step_btn_frame, text="1. Request PIN", command=request_pin, width=14).pack(side=tk.LEFT, padx=5)
-                        ttk.Button(step_btn_frame, text="2. Send PIN", command=send_pin, width=14).pack(side=tk.LEFT, padx=5)
+                        request_btn = ttk.Button(step_btn_frame, text="Request PIN", command=request_pin, width=12)
+                        request_btn.pack(side=tk.LEFT, padx=5)
 
                         # Buttons for fixed/no PIN modes
                         btn_frame = ttk.Frame(pin_frame)
                         btn_frame.pack(pady=10)
-                        ttk.Button(btn_frame, text="Pair", command=do_pair, width=10).pack(side=tk.LEFT, padx=10)
+                        pair_btn = ttk.Button(btn_frame, text="Pair", command=do_pair, width=10)
+                        pair_btn.pack(side=tk.LEFT, padx=10)
                         ttk.Button(btn_frame, text="Cancel", command=pin_dialog.destroy, width=10).pack(side=tk.LEFT, padx=10)
+
+                        def update_ui_for_mode(*args):
+                            """Update UI elements based on selected pairing mode."""
+                            mode = pair_mode.get()
+                            if mode == "fixed":
+                                # Fixed PIN: show PIN with default, enable Pair, disable Request
+                                pin_var.set("123456")
+                                pin_entry.config(state="normal")
+                                pin_label.config(foreground="")
+                                request_btn.config(state="disabled")
+                                pair_btn.config(state="normal")
+                                help_label.config(text="Enter the fixed PIN (usually 123456), then click Pair")
+                            elif mode == "display":
+                                # Radio displays: blank PIN, enable Request and Pair
+                                pin_var.set("")
+                                pin_entry.config(state="normal")
+                                pin_label.config(foreground="")
+                                request_btn.config(state="normal")
+                                pair_btn.config(state="normal")
+                                help_label.config(text="Click 'Request PIN', read PIN from radio, enter it, then click Pair")
+                            else:  # none
+                                # No PIN: clear and disable PIN field, disable Request, enable Pair
+                                pin_var.set("")
+                                pin_entry.config(state="disabled")
+                                pin_label.config(foreground="gray")
+                                request_btn.config(state="disabled")
+                                pair_btn.config(state="normal")
+                                help_label.config(text="Click Pair to connect without a PIN")
+
+                        # Bind mode changes to UI update
+                        pair_mode.trace_add("write", update_ui_for_mode)
+                        # Initialize UI for default mode
+                        update_ui_for_mode()
 
                     # Scan buttons
                     scan_btn_frame = ttk.Frame(main_frame)
@@ -1786,6 +1835,8 @@ class MeshtasticAIGui:
                 self.config["tcp_host"] = tcp_host_var.get()
             elif conn_type == "ble":
                 self.config["ble_address"] = ble_address_var.get()
+                if "ble_retries" in widgets:
+                    self.config["ble_retries"] = int(widgets["ble_retries"].get())
 
             self.config["auto_reconnect"] = auto_reconnect_var.get()
 
@@ -1978,12 +2029,21 @@ class MeshtasticAIGui:
             if not ble_address:
                 raise ValueError("BLE address not configured. Please set the address in Radio Connection settings.")
 
-            # Ensure Bluetooth is on, but DON'T connect - let meshtastic handle it
+            # Initialize Bluetooth adapter thoroughly
             import subprocess
+            import time
             try:
-                subprocess.run(["bluetoothctl", "power", "on"], timeout=5, capture_output=True)
-                # Disconnect any existing OS-level connection so meshtastic can connect
-                subprocess.run(["bluetoothctl", "disconnect", ble_address], timeout=5, capture_output=True)
+                # Power cycle Bluetooth to ensure clean state
+                subprocess.run(["bluetoothctl", "power", "off"], timeout=3, capture_output=True)
+                time.sleep(0.5)
+                subprocess.run(["bluetoothctl", "power", "on"], timeout=3, capture_output=True)
+                time.sleep(0.5)
+                # Disconnect any existing OS-level connection
+                subprocess.run(["bluetoothctl", "disconnect", ble_address], timeout=3, capture_output=True)
+                # Brief scan to wake up the adapter
+                subprocess.run(["bluetoothctl", "scan", "on"], timeout=2, capture_output=True)
+                time.sleep(1)
+                subprocess.run(["bluetoothctl", "scan", "off"], timeout=2, capture_output=True)
             except Exception:
                 pass
 
@@ -2014,26 +2074,54 @@ class MeshtasticAIGui:
             conn_info = self.config.get("serial_port", "") or "auto"
 
         self._connecting = True
+        ble_retries = self.config.get("ble_retries", 1)
+
         if conn_type == "ble":
-            self._update_status(False, f"Connecting to {conn_info} (30-45s)...")
-            self._log_received(f"Attempting {conn_type.upper()} connection to {conn_info}... (this can take 30-45 seconds)")
+            self._update_status(False, f"Connecting to {conn_info}...")
+            retry_msg = f" (retries: {ble_retries})" if ble_retries > 0 else ""
+            self._log_received(f"Attempting {conn_type.upper()} connection to {conn_info}...{retry_msg}")
         else:
             self._update_status(False, f"Connecting to {conn_info}...")
             self._log_received(f"Attempting {conn_type.upper()} connection to {conn_info}...")
 
         def connect_thread():
-            try:
-                interface, conn_type, conn_info = self._create_interface()
-                # Schedule UI update on main thread - use default args to capture values
-                self.root.after(0, lambda i=interface, t=conn_type, c=conn_info: self._on_connect_success(i, t, c))
-            except Exception as e:
-                error_msg = str(e)
-                self.root.after(0, lambda msg=error_msg: self._on_connect_failure(msg))
-            finally:
-                # Ensure _connecting is always reset
-                self._connecting = False
+            retries_left = ble_retries if conn_type == "ble" else 0
+            attempt = 0
+            last_error = ""
 
-        thread = threading.Thread(target=connect_thread, daemon=True)
+            while True:
+                attempt += 1
+                try:
+                    interface, conn_type_result, conn_info_result = self._create_interface()
+                    # Schedule UI update on main thread - use default args to capture values
+                    self.root.after(0, lambda i=interface, t=conn_type_result, c=conn_info_result: self._on_connect_success(i, t, c))
+                    return
+                except Exception as e:
+                    last_error = str(e)
+                    if retries_left > 0:
+                        retries_left -= 1
+                        self.root.after(0, lambda a=attempt: self._log_received(f"BLE attempt {a} failed, retrying... ({retries_left + 1} left)"))
+                        self.root.after(0, lambda r=retries_left: self._update_status(False, f"Retrying BLE ({r + 1} left)..."))
+                        import time
+                        time.sleep(2)
+                    else:
+                        break
+
+            # All retries exhausted
+            if conn_type == "ble":
+                last_error = f"{last_error}\n\nTip: Try switching to WiFi briefly, then back to BLE."
+            self.root.after(0, lambda msg=last_error: self._on_connect_failure(msg))
+
+        def connect_finally():
+            self._connecting = False
+
+        def connect_wrapper():
+            try:
+                connect_thread()
+            finally:
+                connect_finally()
+
+        thread = threading.Thread(target=connect_wrapper, daemon=True)
         thread.start()
 
     def _on_connect_success(self, interface, conn_type, conn_info):
@@ -2280,16 +2368,40 @@ class MeshtasticAIGui:
 
     def on_exit(self):
         """Handle application exit."""
-        if self.running:
-            self.stop_service()
+        # Stop all timers first
+        self._stop_refresh_timer()
+        self._stop_session_timer()
+        self._stop_connection_check()
+
         # Save window geometry and theme before exit
-        self.config["window_geometry"] = self.root.geometry()
-        self.config["theme"] = self.current_theme
-        save_config(self.config)
+        try:
+            self.config["window_geometry"] = self.root.geometry()
+            self.config["theme"] = self.current_theme
+            save_config(self.config)
+        except:
+            pass
+
         # Unsubscribe from pubsub events
-        pub.unsubscribe(self._on_receive, "meshtastic.receive")
-        pub.unsubscribe(self._on_node_update, "meshtastic.node.updated")
-        self.root.quit()
+        try:
+            pub.unsubscribe(self._on_receive, "meshtastic.receive")
+            pub.unsubscribe(self._on_node_update, "meshtastic.node.updated")
+        except:
+            pass  # Ignore if already unsubscribed
+
+        # Close interface in background thread (don't wait - exit immediately)
+        if self.interface:
+            interface = self.interface
+            self.interface = None
+            self.running = False
+            def cleanup():
+                try:
+                    interface.close()
+                except:
+                    pass
+            threading.Thread(target=cleanup, daemon=True).start()
+
+        # Destroy window and exit
+        self.root.destroy()
 
 
 def main():
