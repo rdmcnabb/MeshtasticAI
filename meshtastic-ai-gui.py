@@ -796,6 +796,11 @@ class MeshtasticAIGui:
             interface.sendText(text=reply, channelIndex=channel)
             msg = f"AI to {from_id} (ch {channel}): {reply}"
             self._log_reply(msg, is_ai=True)
+            # Also show in received area and update counters
+            self._log_received(msg)
+            self.messages_sent += 1
+            self.messages_received += 1
+            self.root.after(0, self._update_message_counters)
         except Exception as e:
             self._log_reply(f"FAILED to {from_id}: {e}")
 
@@ -1151,8 +1156,9 @@ class MeshtasticAIGui:
             self._log_received(f"From {my_id} {dest_str} (ch {channel}): {message}")
             self.message_text.delete("1.0", tk.END)
 
-            # Update sent counter
+            # Update counters (sent + received since it echoes to received area)
             self.messages_sent += 1
+            self.messages_received += 1
             self._update_message_counters()
 
             # Check if local message is an AI query and process it (only if AI enabled)
