@@ -576,13 +576,13 @@ class MeshtasticAIGui:
         node_scrollbar.config(command=self.node_tree.yview)
 
         # Define columns
-        self.node_tree.heading("id", text="Node ID")
-        self.node_tree.heading("name", text="Name")
+        self.node_tree.heading("id", text="Node")
+        self.node_tree.heading("name", text="Long Name")
         self.node_tree.heading("snr", text="SNR")
         self.node_tree.heading("last_seen", text="Last Seen")
 
-        self.node_tree.column("id", width=100)
-        self.node_tree.column("name", width=150)
+        self.node_tree.column("id", width=160)
+        self.node_tree.column("name", width=140)
         self.node_tree.column("snr", width=60)
         self.node_tree.column("last_seen", width=100)
 
@@ -907,6 +907,13 @@ class MeshtasticAIGui:
                 long_name = user.get("longName")
                 short_name = user.get("shortName")
                 name = long_name or short_name or "Unknown"
+
+                # Format first column as "ShortName (NodeID)"
+                if short_name:
+                    id_display = f"{short_name} ({node_id})"
+                else:
+                    id_display = node_id
+
                 snr = node_info.get("snr", "N/A")
                 if snr != "N/A":
                     snr = f"{snr:.1f}" if isinstance(snr, float) else str(snr)
@@ -920,7 +927,7 @@ class MeshtasticAIGui:
 
                 # Use node_id as item id for easy reselection
                 self.node_tree.insert(
-                    "", tk.END, iid=node_id, values=(node_id, name, snr, last_seen)
+                    "", tk.END, iid=node_id, values=(id_display, name, snr, last_seen)
                 )
 
             # Restore selection if we had one
@@ -960,6 +967,26 @@ class MeshtasticAIGui:
             self._update_node_list()
             self._start_refresh_timer()
 
+    def _get_node_display_name(self, node_id):
+        """Get a display name for a node ID. Returns 'Name (ID)' or just ID if name unknown."""
+        if not self.interface or not node_id:
+            return node_id or "unknown"
+
+        try:
+            nodes = self.interface.nodes
+            if nodes and node_id in nodes:
+                node_info = nodes[node_id]
+                user = node_info.get("user", {})
+                long_name = user.get("longName")
+                short_name = user.get("shortName")
+                name = short_name or long_name  # Prefer short name for messages
+                if name:
+                    return f"{name} ({node_id})"
+        except Exception:
+            pass
+
+        return node_id
+
     def _on_receive(self, packet, interface):
         """Handle received messages."""
         if "decoded" not in packet:
@@ -975,8 +1002,9 @@ class MeshtasticAIGui:
 
         from_id = packet.get("fromId", "unknown")
         channel = packet.get("channel", 0)
+        sender_name = self._get_node_display_name(from_id)
 
-        self._log_received(f"From {from_id} (ch {channel}): {text}")
+        self._log_received(f"From {sender_name} (ch {channel}): {text}")
 
         # Update received counter
         self.messages_received += 1
@@ -1002,15 +1030,17 @@ class MeshtasticAIGui:
     def _process_ai_query(self, question, from_id, channel, interface):
         """Process an AI query and send response."""
         answer = self._query_ollama(question)
+        sender_name = self._get_node_display_name(from_id)
 
-        # Truncate safely
+        # Truncate safely - use from_id for the actual reply (Meshtastic addressing)
         reply = f"@{from_id} {answer}"
         if len(reply.encode('utf-8')) > MAX_MESSAGE_BYTES:
             reply = f"@{from_id} {answer[:100]}..."
 
         try:
             interface.sendText(text=reply, channelIndex=channel)
-            msg = f"AI to {from_id} (ch {channel}): {reply}"
+            # Use display name for logging
+            msg = f"AI to {sender_name} (ch {channel}): {reply}"
             self._log_reply(msg, is_ai=True)
             # Also show in received area and update counters
             self._log_received(msg)
@@ -1018,7 +1048,7 @@ class MeshtasticAIGui:
             self.messages_received += 1
             self.root.after(0, self._update_message_counters)
         except Exception as e:
-            self._log_reply(f"FAILED to {from_id}: {e}")
+            self._log_reply(f"FAILED to {sender_name}: {e}")
 
     def _query_ollama(self, question):
         """Query Ollama API with retry logic."""
@@ -2187,8 +2217,20 @@ class MeshtasticAIGui:
         self._connecting = False
         self.interface = interface
         self.running = True
-        self._update_status(True, conn_info)
-        self._log_received(f"Service started - Connected via {conn_type.upper()} ({conn_info})")
+
+        # Get radio's short name for display
+        try:
+            my_info = interface.getMyNodeInfo()
+            short_name = my_info.get("user", {}).get("shortName", "") if my_info else ""
+            if short_name:
+                display_info = f"{short_name} ({conn_info})"
+            else:
+                display_info = conn_info
+        except:
+            display_info = conn_info
+
+        self._update_status(True, display_info)
+        self._log_received(f"Service started - Connected via {conn_type.upper()} to {display_info}")
         # Clear and refresh node list
         self.root.after(1000, self._refresh_nodes)
         # Start refresh timer
@@ -2384,9 +2426,11 @@ class MeshtasticAIGui:
 
         try:
             channel = int(self.channel_var.get())
-            # Get our own node ID
+            # Get our own node ID and name
             my_info = self.interface.getMyNodeInfo()
             my_id = my_info.get("user", {}).get("id", "local") if my_info else "local"
+            my_name = my_info.get("user", {}).get("shortName") or my_info.get("user", {}).get("longName") if my_info else None
+            my_display = f"{my_name} ({my_id})" if my_name else my_id
 
             # Send to specific node or broadcast
             if self.selected_node_id:
@@ -2395,14 +2439,15 @@ class MeshtasticAIGui:
                     channelIndex=channel,
                     destinationId=self.selected_node_id
                 )
-                dest_str = f"to {self.selected_node_id}"
+                dest_display = self._get_node_display_name(self.selected_node_id)
+                dest_str = f"to {dest_display}"
             else:
                 self.interface.sendText(text=message, channelIndex=channel)
                 dest_str = "broadcast"
 
             self._log_reply(f"Sent {dest_str} (ch {channel}): {message}")
             # Also show in Messages Received so we see the full conversation
-            self._log_received(f"From {my_id} {dest_str} (ch {channel}): {message}")
+            self._log_received(f"From {my_display} {dest_str} (ch {channel}): {message}")
             self.message_text.delete("1.0", tk.END)
 
             # Update counters (sent + received since it echoes to received area)
