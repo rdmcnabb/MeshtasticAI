@@ -85,6 +85,7 @@ import threading
 import json
 import glob
 import time
+import platform
 from datetime import datetime
 
 # ================= CONSTANTS =================
@@ -93,8 +94,16 @@ MAX_MESSAGE_BYTES = 200  # Meshtastic message size limit
 OLLAMA_TIMEOUT = 90  # Seconds to wait for AI response
 NODE_REFRESH_INTERVAL = 30000  # Milliseconds between node list refreshes
 
+# ================= PLATFORM DETECTION =================
+IS_WINDOWS = platform.system() == "Windows"
+IS_LINUX = platform.system() == "Linux"
+IS_MACOS = platform.system() == "Darwin"
+
 # ================= CONFIG FILE =================
-CONFIG_FILE = os.path.expanduser("~/.meshtastic-ai-config.json")
+if IS_WINDOWS:
+    CONFIG_FILE = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "meshtastic-ai-config.json")
+else:
+    CONFIG_FILE = os.path.expanduser("~/.meshtastic-ai-config.json")
 
 DEFAULT_CONFIG = {
     "connection_type": "serial",  # serial, tcp, or ble
@@ -148,10 +157,20 @@ def save_config(config):
 def detect_serial_ports():
     """Detect available serial ports."""
     ports = []
-    # Common patterns for Meshtastic devices
-    patterns = ["/dev/ttyUSB*", "/dev/ttyACM*", "/dev/cu.usbserial*", "/dev/cu.usbmodem*"]
-    for pattern in patterns:
-        ports.extend(glob.glob(pattern))
+    if IS_WINDOWS:
+        # Windows COM ports - check which ones exist
+        import serial.tools.list_ports
+        try:
+            ports = [port.device for port in serial.tools.list_ports.comports()]
+        except:
+            # Fallback: try common COM ports
+            for i in range(1, 20):
+                ports.append(f"COM{i}")
+    else:
+        # Linux/macOS patterns
+        patterns = ["/dev/ttyUSB*", "/dev/ttyACM*", "/dev/cu.usbserial*", "/dev/cu.usbmodem*"]
+        for pattern in patterns:
+            ports.extend(glob.glob(pattern))
     return sorted(ports)
 # ===============================================
 
@@ -1117,10 +1136,8 @@ class MeshtasticAIGui:
 
             if conn_type == "serial":
                 ttk.Label(settings_frame, text="Serial Port:").grid(row=0, column=0, sticky="w", pady=5)
-                # Get available ports
-                ports = ["(Auto-detect)"]
-                for pattern in ["/dev/ttyUSB*", "/dev/ttyACM*", "/dev/cu.usbmodem*", "/dev/cu.usbserial*"]:
-                    ports.extend(glob.glob(pattern))
+                # Get available ports using cross-platform function
+                ports = ["(Auto-detect)"] + detect_serial_ports()
                 port_combo = ttk.Combobox(settings_frame, textvariable=serial_port_var, values=ports, width=30)
                 port_combo.grid(row=0, column=1, sticky="w", pady=5, padx=5)
                 widgets["serial_port"] = port_combo
@@ -1173,90 +1190,99 @@ class MeshtasticAIGui:
                     paired_devices = []
                     scanned_devices = []
 
-                    # === PAIRED DEVICES SECTION ===
-                    ttk.Label(main_frame, text="Paired Devices", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+                    # === PAIRED DEVICES SECTION (Linux only) ===
+                    if IS_LINUX:
+                        ttk.Label(main_frame, text="Paired Devices", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
 
-                    paired_frame = ttk.Frame(main_frame)
-                    paired_frame.pack(fill=tk.X, pady=5)
+                        paired_frame = ttk.Frame(main_frame)
+                        paired_frame.pack(fill=tk.X, pady=5)
 
-                    paired_listbox = tk.Listbox(paired_frame, height=5, font=("TkFixedFont", 9))
-                    paired_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+                        paired_listbox = tk.Listbox(paired_frame, height=5, font=("TkFixedFont", 9))
+                        paired_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-                    paired_scroll = ttk.Scrollbar(paired_frame, orient=tk.VERTICAL, command=paired_listbox.yview)
-                    paired_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-                    paired_listbox.config(yscrollcommand=paired_scroll.set)
+                        paired_scroll = ttk.Scrollbar(paired_frame, orient=tk.VERTICAL, command=paired_listbox.yview)
+                        paired_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+                        paired_listbox.config(yscrollcommand=paired_scroll.set)
 
-                    def get_paired_devices():
-                        """Get list of paired Bluetooth devices using bluetoothctl."""
-                        try:
-                            import subprocess
-                            result = subprocess.run(
-                                ["bluetoothctl", "paired-devices"],
-                                capture_output=True, text=True, timeout=5
-                            )
-                            devices = []
-                            for line in result.stdout.strip().split('\n'):
-                                if line.startswith("Device "):
-                                    parts = line.split(" ", 2)
-                                    if len(parts) >= 3:
-                                        addr = parts[1]
-                                        name = parts[2]
-                                        devices.append({"address": addr, "name": name})
-                            return devices
-                        except Exception as e:
-                            return []
+                        def get_paired_devices():
+                            """Get list of paired Bluetooth devices using bluetoothctl."""
+                            try:
+                                import subprocess
+                                result = subprocess.run(
+                                    ["bluetoothctl", "paired-devices"],
+                                    capture_output=True, text=True, timeout=5
+                                )
+                                devices = []
+                                for line in result.stdout.strip().split('\n'):
+                                    if line.startswith("Device "):
+                                        parts = line.split(" ", 2)
+                                        if len(parts) >= 3:
+                                            addr = parts[1]
+                                            name = parts[2]
+                                            devices.append({"address": addr, "name": name})
+                                return devices
+                            except Exception as e:
+                                return []
 
-                    def refresh_paired():
-                        paired_listbox.delete(0, tk.END)
-                        paired_devices.clear()
-                        devices = get_paired_devices()
-                        for d in devices:
-                            name = d["name"]
-                            # Highlight Meshtastic devices
-                            if "meshtastic" in name.lower() or "mesh" in name.lower():
-                                display = f"[MESH] {name} ({d['address']})"
-                            else:
-                                display = f"{name} ({d['address']})"
-                            paired_listbox.insert(tk.END, display)
-                            paired_devices.append(d)
-                        if not devices:
-                            paired_listbox.insert(tk.END, "(No paired devices found)")
+                        def refresh_paired():
+                            paired_listbox.delete(0, tk.END)
+                            paired_devices.clear()
+                            devices = get_paired_devices()
+                            for d in devices:
+                                name = d["name"]
+                                # Highlight Meshtastic devices
+                                if "meshtastic" in name.lower() or "mesh" in name.lower():
+                                    display = f"[MESH] {name} ({d['address']})"
+                                else:
+                                    display = f"{name} ({d['address']})"
+                                paired_listbox.insert(tk.END, display)
+                                paired_devices.append(d)
+                            if not devices:
+                                paired_listbox.insert(tk.END, "(No paired devices found)")
 
-                    # Paired devices buttons
-                    paired_btn_frame = ttk.Frame(main_frame)
-                    paired_btn_frame.pack(fill=tk.X, pady=5)
+                        # Paired devices buttons
+                        paired_btn_frame = ttk.Frame(main_frame)
+                        paired_btn_frame.pack(fill=tk.X, pady=5)
 
-                    def select_paired():
-                        selection = paired_listbox.curselection()
-                        if not selection or not paired_devices:
-                            return
-                        idx = selection[0]
-                        if idx < len(paired_devices):
-                            ble_address_var.set(paired_devices[idx]["address"])
-                            scan_dialog.destroy()
+                        def select_paired():
+                            selection = paired_listbox.curselection()
+                            if not selection or not paired_devices:
+                                return
+                            idx = selection[0]
+                            if idx < len(paired_devices):
+                                ble_address_var.set(paired_devices[idx]["address"])
+                                scan_dialog.destroy()
 
-                    def unpair_device():
-                        selection = paired_listbox.curselection()
-                        if not selection or not paired_devices:
-                            return
-                        idx = selection[0]
-                        if idx < len(paired_devices):
-                            addr = paired_devices[idx]["address"]
-                            name = paired_devices[idx]["name"]
-                            if messagebox.askyesno("Unpair Device", f"Remove pairing for {name}?"):
-                                try:
-                                    import subprocess
-                                    subprocess.run(["bluetoothctl", "remove", addr], timeout=5)
-                                    refresh_paired()
-                                except Exception as e:
-                                    messagebox.showerror("Error", f"Failed to unpair: {e}")
+                        def unpair_device():
+                            selection = paired_listbox.curselection()
+                            if not selection or not paired_devices:
+                                return
+                            idx = selection[0]
+                            if idx < len(paired_devices):
+                                addr = paired_devices[idx]["address"]
+                                name = paired_devices[idx]["name"]
+                                if messagebox.askyesno("Unpair Device", f"Remove pairing for {name}?"):
+                                    try:
+                                        import subprocess
+                                        subprocess.run(["bluetoothctl", "remove", addr], timeout=5)
+                                        refresh_paired()
+                                    except Exception as e:
+                                        messagebox.showerror("Error", f"Failed to unpair: {e}")
 
-                    ttk.Button(paired_btn_frame, text="Use Selected", command=select_paired).pack(side=tk.LEFT, padx=2)
-                    ttk.Button(paired_btn_frame, text="Refresh", command=refresh_paired).pack(side=tk.LEFT, padx=2)
-                    ttk.Button(paired_btn_frame, text="Unpair", command=unpair_device).pack(side=tk.LEFT, padx=2)
+                        ttk.Button(paired_btn_frame, text="Use Selected", command=select_paired).pack(side=tk.LEFT, padx=2)
+                        ttk.Button(paired_btn_frame, text="Refresh", command=refresh_paired).pack(side=tk.LEFT, padx=2)
+                        ttk.Button(paired_btn_frame, text="Unpair", command=unpair_device).pack(side=tk.LEFT, padx=2)
 
-                    # === SEPARATOR ===
-                    ttk.Separator(main_frame, orient="horizontal").pack(fill=tk.X, pady=10)
+                        # === SEPARATOR ===
+                        ttk.Separator(main_frame, orient="horizontal").pack(fill=tk.X, pady=10)
+                    else:
+                        # Windows/macOS: Show pairing instructions
+                        info_frame = ttk.Frame(main_frame)
+                        info_frame.pack(fill=tk.X, pady=10)
+                        ttk.Label(info_frame, text="Bluetooth Pairing", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+                        ttk.Label(info_frame, text="On Windows/macOS, pair your Meshtastic device using\nSystem Settings > Bluetooth before connecting here.",
+                                  foreground="gray").pack(anchor="w", pady=5)
+                        ttk.Separator(main_frame, orient="horizontal").pack(fill=tk.X, pady=10)
 
                     # === SCAN FOR NEW DEVICES SECTION ===
                     ttk.Label(main_frame, text="Scan for New Devices", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
@@ -1678,14 +1704,27 @@ class MeshtasticAIGui:
                     scan_btn_frame = ttk.Frame(main_frame)
                     scan_btn_frame.pack(fill=tk.X, pady=5)
 
+                    def use_scanned():
+                        """Use the selected scanned device address."""
+                        selection = scanned_listbox.curselection()
+                        if not selection or not scanned_devices:
+                            return
+                        idx = selection[0]
+                        if idx < len(scanned_devices):
+                            ble_address_var.set(scanned_devices[idx].address)
+                            scan_dialog.destroy()
+
                     ttk.Button(scan_btn_frame, text="Scan", command=run_scan).pack(side=tk.LEFT, padx=2)
-                    ttk.Button(scan_btn_frame, text="Pair Selected", command=pair_device).pack(side=tk.LEFT, padx=2)
+                    if IS_LINUX:
+                        ttk.Button(scan_btn_frame, text="Pair Selected", command=pair_device).pack(side=tk.LEFT, padx=2)
+                    ttk.Button(scan_btn_frame, text="Use Selected", command=use_scanned).pack(side=tk.LEFT, padx=2)
 
                     # Close button
                     ttk.Button(main_frame, text="Close", command=scan_dialog.destroy).pack(pady=10)
 
-                    # Initial load of paired devices
-                    refresh_paired()
+                    # Initial load of paired devices (Linux only)
+                    if IS_LINUX:
+                        refresh_paired()
 
                 ttk.Button(settings_frame, text="Manage...", command=scan_ble).grid(row=0, column=2, padx=5)
 
@@ -1751,26 +1790,44 @@ class MeshtasticAIGui:
 
             def do_test():
                 import concurrent.futures
-                import subprocess
 
-                # For BLE, just check if device is paired (fast check, no full connection)
+                # For BLE, check if device is available
                 if conn_type == "ble":
                     try:
-                        # Check if device is paired
-                        result = subprocess.run(
-                            ["bluetoothctl", "info", test_target],
-                            capture_output=True, text=True, timeout=5
-                        )
-                        if "Paired: yes" in result.stdout:
-                            # Device is paired, check if it's trusted
-                            if "Trusted: yes" in result.stdout:
-                                dialog.after(0, lambda: on_test_success(f"{test_target} (paired & trusted)"))
+                        if IS_LINUX:
+                            # Linux: use bluetoothctl to check paired status (fast)
+                            import subprocess
+                            result = subprocess.run(
+                                ["bluetoothctl", "info", test_target],
+                                capture_output=True, text=True, timeout=5
+                            )
+                            if "Paired: yes" in result.stdout:
+                                if "Trusted: yes" in result.stdout:
+                                    dialog.after(0, lambda: on_test_success(f"{test_target} (paired & trusted)"))
+                                else:
+                                    dialog.after(0, lambda: on_test_success(f"{test_target} (paired)"))
+                            elif "not available" in result.stderr.lower() or "Device" not in result.stdout:
+                                dialog.after(0, lambda: on_test_failure("Device not found. Try pairing first."))
                             else:
-                                dialog.after(0, lambda: on_test_success(f"{test_target} (paired)"))
-                        elif "not available" in result.stderr.lower() or "Device" not in result.stdout:
-                            dialog.after(0, lambda: on_test_failure("Device not found. Try pairing first."))
+                                dialog.after(0, lambda: on_test_failure("Device not paired. Use Manage to pair."))
                         else:
-                            dialog.after(0, lambda: on_test_failure("Device not paired. Use Manage to pair."))
+                            # Windows/macOS: use bleak to scan for device
+                            if not BLEAK_AVAILABLE:
+                                dialog.after(0, lambda: on_test_failure("Install 'bleak' library for BLE support"))
+                                return
+
+                            async def check_ble():
+                                devices = await BleakScanner.discover(timeout=5.0)
+                                for d in devices:
+                                    if d.address.upper() == test_target.upper():
+                                        return True
+                                return False
+
+                            found = asyncio.run(check_ble())
+                            if found:
+                                dialog.after(0, lambda: on_test_success(f"{test_target} (device found)"))
+                            else:
+                                dialog.after(0, lambda: on_test_failure("Device not found. Ensure it's powered on and nearby."))
                     except Exception as e:
                         dialog.after(0, lambda: on_test_failure(str(e)))
                     return
@@ -2029,23 +2086,24 @@ class MeshtasticAIGui:
             if not ble_address:
                 raise ValueError("BLE address not configured. Please set the address in Radio Connection settings.")
 
-            # Initialize Bluetooth adapter thoroughly
-            import subprocess
-            import time
-            try:
-                # Power cycle Bluetooth to ensure clean state
-                subprocess.run(["bluetoothctl", "power", "off"], timeout=3, capture_output=True)
-                time.sleep(0.5)
-                subprocess.run(["bluetoothctl", "power", "on"], timeout=3, capture_output=True)
-                time.sleep(0.5)
-                # Disconnect any existing OS-level connection
-                subprocess.run(["bluetoothctl", "disconnect", ble_address], timeout=3, capture_output=True)
-                # Brief scan to wake up the adapter
-                subprocess.run(["bluetoothctl", "scan", "on"], timeout=2, capture_output=True)
-                time.sleep(1)
-                subprocess.run(["bluetoothctl", "scan", "off"], timeout=2, capture_output=True)
-            except Exception:
-                pass
+            # Initialize Bluetooth adapter (Linux only - Windows handles this automatically)
+            if IS_LINUX:
+                import subprocess
+                import time
+                try:
+                    # Power cycle Bluetooth to ensure clean state
+                    subprocess.run(["bluetoothctl", "power", "off"], timeout=3, capture_output=True)
+                    time.sleep(0.5)
+                    subprocess.run(["bluetoothctl", "power", "on"], timeout=3, capture_output=True)
+                    time.sleep(0.5)
+                    # Disconnect any existing OS-level connection
+                    subprocess.run(["bluetoothctl", "disconnect", ble_address], timeout=3, capture_output=True)
+                    # Brief scan to wake up the adapter
+                    subprocess.run(["bluetoothctl", "scan", "on"], timeout=2, capture_output=True)
+                    time.sleep(1)
+                    subprocess.run(["bluetoothctl", "scan", "off"], timeout=2, capture_output=True)
+                except Exception:
+                    pass
 
             interface = meshtastic.ble_interface.BLEInterface(address=ble_address)
             conn_info = ble_address
