@@ -1,3 +1,4 @@
 meshtastic
 pypubsub
 requests
+pyserial

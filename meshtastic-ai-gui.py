@@ -112,6 +112,7 @@ DEFAULT_CONFIG = {
     "ble_address": "",  # Bluetooth device address
     "ble_retries": 1,  # Number of auto-retries for BLE connection
     "auto_start": True,  # Auto-start service on launch
+    "needs_radio_config": False,  # Flag to show config dialog on next start
     "ai_enabled": True,  # Enable/disable AI features
     "ai_prefix": "/AI",
     "ollama_url": "http://127.0.0.1:11434/api/generate",
@@ -1927,12 +1928,64 @@ class MeshtasticAIGui:
 
             self.config["auto_reconnect"] = auto_reconnect_var.get()
 
+            # Clear the needs_radio_config flag since user just configured it
+            self.config["needs_radio_config"] = False
+
             if save_config(self.config):
-                messagebox.showinfo("Radio Connection", "Configuration saved!\nRestart the service to apply changes.")
+                # Close dialog first, then show message
                 dialog.destroy()
+                messagebox.showinfo("Radio Connection", "Configuration saved!\nRestart the service to apply changes.")
             else:
+                dialog.destroy()
                 messagebox.showerror("Error", "Failed to save configuration")
 
+        def reset_configuration():
+            """Reset radio connection configuration and show setup on next start."""
+            # Stop the service if running
+            if self.running:
+                self.stop_service()
+                # Wait a bit for service to stop
+                self.root.after(500, lambda: _finish_reset())
+            else:
+                _finish_reset()
+
+        def _finish_reset():
+            """Complete the reset after service is stopped."""
+            # Clear only radio connection settings, keep AI settings
+            self.config["connection_type"] = "serial"  # Reset to default
+            self.config["serial_port"] = ""  # Empty = auto-detect
+            self.config["tcp_host"] = ""  # Clear IP address
+            self.config["ble_address"] = ""  # Clear BLE address
+            self.config["ble_retries"] = 1
+            self.config["auto_reconnect"] = True
+
+            # Set flag to show config dialog on next start
+            self.config["needs_radio_config"] = True
+
+            # Also reset CLI bot first-run flag
+            cli_config_file = os.path.expanduser("~/.meshtastic-ai-bot-configured")
+            if os.path.exists(cli_config_file):
+                try:
+                    os.remove(cli_config_file)
+                except Exception:
+                    pass
+
+            # Save configuration
+            if save_config(self.config):
+                # Close dialog FIRST so popup is visible
+                dialog.destroy()
+                # Then show success message
+                messagebox.showinfo("Reset Configuration",
+                                  "Radio connection configuration reset!\n\n"
+                                  "- Service has been stopped\n"
+                                  "- Radio connection settings cleared (IP, serial port, etc.)\n"
+                                  "- AI settings preserved\n\n"
+                                  "The configuration dialog will appear when you start the service next time.")
+            else:
+                dialog.destroy()
+                messagebox.showerror("Error", "Failed to save configuration")
+
+        ttk.Button(button_frame, text="Reset Setup", command=reset_configuration).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Save", command=save_radio_config).pack(side=tk.RIGHT, padx=5)
         ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
 
@@ -2150,6 +2203,28 @@ class MeshtasticAIGui:
 
         if hasattr(self, '_connecting') and self._connecting:
             messagebox.showinfo("Info", "Connection attempt in progress...")
+            return
+
+        # Check if radio configuration is needed (first run or after reset)
+        needs_config = self.config.get("needs_radio_config", False)
+
+        # Also check if it's truly first run - no connection type configured with actual values
+        is_first_run = (
+            self.config.get("connection_type", "serial") == "serial" and
+            not self.config.get("serial_port", "") and
+            not self.config.get("tcp_host", "") and
+            not self.config.get("ble_address", "")
+        )
+
+        if needs_config or is_first_run:
+            response = messagebox.askyesno(
+                "Radio Configuration Required",
+                "Radio connection needs to be configured.\n\n"
+                "Would you like to configure it now?",
+                icon='question'
+            )
+            if response:
+                self._open_radio_config()
             return
 
         # Get connection info for status display
