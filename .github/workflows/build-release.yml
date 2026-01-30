@@ -1,0 +1,113 @@
+name: Build Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v2.7.0
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: MeshtasticAI-linux
+            asset_name: MeshtasticAI-linux
+          - os: windows-latest
+            artifact_name: MeshtasticAI-windows.exe
+            asset_name: MeshtasticAI-windows.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Extract version from tag
+        id: get_version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build with PyInstaller (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          pyinstaller --onefile --name "MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-linux" meshtastic-ai-gui.py
+
+      - name: Build with PyInstaller (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          pyinstaller --onefile --name "MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-windows" meshtastic-ai-gui.py
+
+      - name: Upload Linux artifact
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-linux
+          path: dist/MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-linux
+
+      - name: Upload Windows artifact
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-windows
+          path: dist/MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-windows.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Extract version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-linux
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-windows
+
+      - name: List downloaded files
+        run: ls -la
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Meshtastic AI GUI v${{ steps.get_version.outputs.VERSION }}
+          body: |
+            ## Meshtastic AI GUI v${{ steps.get_version.outputs.VERSION }}
+
+            ### Downloads
+            - **Linux**: `MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-linux`
+            - **Windows**: `MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-windows.exe`
+
+            ### Installation
+            1. Download the appropriate file for your operating system
+            2. Make it executable (Linux): `chmod +x MeshtasticAI-*-linux`
+            3. Run the application
+
+            ### Requirements
+            - A Meshtastic device connected via USB, TCP, or Bluetooth
+            - (Optional) Ollama for AI features
+          files: |
+            MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-linux
+            MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-windows.exe
+          draft: false
+          prerelease: false
