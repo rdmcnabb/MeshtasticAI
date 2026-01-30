@@ -2,3 +2,4 @@ meshtastic
 pypubsub
 requests
 pyserial
+python-dotenv

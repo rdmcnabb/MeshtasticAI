@@ -119,7 +119,7 @@ DEFAULT_CONFIG = {
     "ollama_model": "llama3.1",
     "api_retries": 3,
     "api_retry_delay": 2,
-    "default_channel": 1,
+    "default_channel": 0,  # Channel 0 is primary
     "window_geometry": "",  # Window size and position
     "theme": "Classic",  # Remember selected theme
     "font_size": 10,  # Font size for text areas
@@ -1034,9 +1034,20 @@ class MeshtasticAIGui:
         sender_name = self._get_node_display_name(from_id)
 
         # Truncate safely - use from_id for the actual reply (Meshtastic addressing)
-        reply = f"@{from_id} {answer}"
-        if len(reply.encode('utf-8')) > MAX_MESSAGE_BYTES:
-            reply = f"@{from_id} {answer[:100]}..."
+        prefix = f"@{from_id} "
+        suffix = "..."
+
+        # Calculate available bytes for the answer
+        available_bytes = MAX_MESSAGE_BYTES - len(prefix.encode('utf-8')) - len(suffix.encode('utf-8'))
+
+        # Truncate answer by bytes, not characters
+        answer_bytes = answer.encode('utf-8')
+        if len(answer_bytes) > available_bytes:
+            # Truncate and ensure we don't cut in the middle of a multi-byte character
+            truncated = answer_bytes[:available_bytes].decode('utf-8', errors='ignore')
+            reply = f"{prefix}{truncated}{suffix}"
+        else:
+            reply = f"{prefix}{answer}"
 
         try:
             interface.sendText(text=reply, channelIndex=channel)
@@ -1924,7 +1935,10 @@ class MeshtasticAIGui:
             elif conn_type == "ble":
                 self.config["ble_address"] = ble_address_var.get()
                 if "ble_retries" in widgets:
-                    self.config["ble_retries"] = int(widgets["ble_retries"].get())
+                    try:
+                        self.config["ble_retries"] = int(widgets["ble_retries"].get())
+                    except ValueError:
+                        self.config["ble_retries"] = 1  # Default value
 
             self.config["auto_reconnect"] = auto_reconnect_var.get()
 
@@ -2132,9 +2146,22 @@ class MeshtasticAIGui:
             self.config["ollama_url"] = url_var.get()
             self.config["ollama_model"] = model_var.get()
             self.config["ai_prefix"] = prefix_var.get()
-            self.config["default_channel"] = int(channel_var.get())
-            self.config["api_retries"] = int(retries_var.get())
-            self.config["font_size"] = int(font_size_var.get())
+
+            # Validate integer inputs
+            try:
+                self.config["default_channel"] = int(channel_var.get())
+            except ValueError:
+                self.config["default_channel"] = 0  # Default to primary channel
+
+            try:
+                self.config["api_retries"] = int(retries_var.get())
+            except ValueError:
+                self.config["api_retries"] = 3  # Default value
+
+            try:
+                self.config["font_size"] = int(font_size_var.get())
+            except ValueError:
+                self.config["font_size"] = 10  # Default value
 
             if save_config(self.config):
                 # Update main window AI status after saving
@@ -2500,7 +2527,13 @@ class MeshtasticAIGui:
             return
 
         try:
-            channel = int(self.channel_var.get())
+            # Validate channel number
+            try:
+                channel = int(self.channel_var.get())
+            except ValueError:
+                messagebox.showerror("Error", "Channel must be a valid number")
+                return
+
             # Get our own node ID and name
             my_info = self.interface.getMyNodeInfo()
             my_id = my_info.get("user", {}).get("id", "local") if my_info else "local"

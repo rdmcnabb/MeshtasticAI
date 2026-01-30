@@ -6,7 +6,8 @@ pkill -f "python.*meshtastic-ai-gui" 2>/dev/null
 sleep 1
 
 # Start the app with nohup to prevent termination
-cd /home/ronald/python3
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 nohup python3 meshtastic-ai-gui.py > /dev/null 2>&1 &
 
 # Wait and verify it started

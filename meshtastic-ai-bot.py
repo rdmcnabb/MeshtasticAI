@@ -8,6 +8,10 @@ import logging
 import os
 from datetime import datetime
 import serial.tools.list_ports
+from dotenv import load_dotenv
+
+# Load .env file if present
+load_dotenv()
 
 # ================= CONFIG (env vars with defaults) =================
 SERIAL_PORT = os.getenv("MESHTASTIC_SERIAL_PORT")  # None = auto-detect
@@ -122,12 +126,22 @@ def on_receive(packet, interface):
 
     answer = query_ollama(question)
 
-    # Truncate safely
+    # Truncate safely based on byte count
     max_bytes = 200
-    reply_base = f"@{from_id} {answer}"
-    reply = reply_base
-    if len(reply.encode('utf-8')) > max_bytes:
-        reply = f"@{from_id} {answer[:100]}..."
+    prefix = f"@{from_id} "
+    suffix = "..."
+
+    # Calculate available bytes for the answer
+    available_bytes = max_bytes - len(prefix.encode('utf-8')) - len(suffix.encode('utf-8'))
+
+    # Truncate answer by bytes, not characters
+    answer_bytes = answer.encode('utf-8')
+    if len(answer_bytes) > available_bytes:
+        # Truncate and ensure we don't cut in the middle of a multi-byte character
+        truncated = answer_bytes[:available_bytes].decode('utf-8', errors='ignore')
+        reply = f"{prefix}{truncated}{suffix}"
+    else:
+        reply = f"{prefix}{answer}"
 
     reply_bytes = len(reply.encode('utf-8'))
     logger.debug(f"Send ch {incoming_channel} ({reply_bytes}B): {reply}")
