@@ -89,7 +89,7 @@ import platform
 from datetime import datetime
 
 # ================= CONSTANTS =================
-VERSION = "2.6.0"
+VERSION = "2.7.0"
 MAX_MESSAGE_BYTES = 200  # Meshtastic message size limit
 OLLAMA_TIMEOUT = 90  # Seconds to wait for AI response
 NODE_REFRESH_INTERVAL = 30000  # Milliseconds between node list refreshes
