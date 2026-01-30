@@ -11,11 +11,9 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact_name: MeshtasticAI-linux
-            asset_name: MeshtasticAI-linux
+            platform: linux
           - os: windows-latest
-            artifact_name: MeshtasticAI-windows.exe
-            asset_name: MeshtasticAI-windows.exe
+            platform: windows
 
     runs-on: ${{ matrix.os }}
 
@@ -40,34 +38,32 @@ jobs:
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
       - name: Build with PyInstaller (Linux)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.platform == 'linux'
         run: |
           pyinstaller --onefile --name "MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-linux" meshtastic-ai-gui.py
 
       - name: Build with PyInstaller (Windows)
-        if: matrix.os == 'windows-latest'
+        if: matrix.platform == 'windows'
         run: |
           pyinstaller --onefile --name "MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-windows" meshtastic-ai-gui.py
 
       - name: Upload Linux artifact
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.platform == 'linux'
         uses: actions/upload-artifact@v4
         with:
-          name: MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-linux
+          name: linux-build
           path: dist/MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-linux
 
       - name: Upload Windows artifact
-        if: matrix.os == 'windows-latest'
+        if: matrix.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-windows
+          name: windows-build
           path: dist/MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-windows.exe
 
   release:
     needs: build
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
       - name: Extract version from tag
@@ -77,37 +73,53 @@ jobs:
       - name: Download Linux artifact
         uses: actions/download-artifact@v4
         with:
-          name: MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-linux
+          name: linux-build
+          path: ./artifacts
 
       - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
-          name: MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-windows
+          name: windows-build
+          path: ./artifacts
 
       - name: List downloaded files
-        run: ls -la
+        run: ls -la ./artifacts
 
-      - name: Create GitHub Release
+      - name: Create Release on MeshtasticAI-Releases repo
         uses: softprops/action-gh-release@v1
         with:
-          name: Meshtastic AI GUI v${{ steps.get_version.outputs.VERSION }}
+          repository: rdmcnabb/MeshtasticAI-Releases
+          token: ${{ secrets.RELEASES_TOKEN }}
+          tag_name: v${{ steps.get_version.outputs.VERSION }}
+          name: MeshtasticAI v${{ steps.get_version.outputs.VERSION }}
           body: |
-            ## Meshtastic AI GUI v${{ steps.get_version.outputs.VERSION }}
+            ## MeshtasticAI v${{ steps.get_version.outputs.VERSION }}
 
             ### Downloads
-            - **Linux**: `MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-linux`
-            - **Windows**: `MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-windows.exe`
+            | Platform | File |
+            |----------|------|
+            | **Windows** | `MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-windows.exe` |
+            | **Linux** | `MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-linux` |
 
             ### Installation
-            1. Download the appropriate file for your operating system
-            2. Make it executable (Linux): `chmod +x MeshtasticAI-*-linux`
-            3. Run the application
+
+            **Windows:**
+            1. Download the `.exe` file
+            2. Double-click to run
+
+            **Linux:**
+            1. Download the Linux file
+            2. Make executable: `chmod +x MeshtasticAI-*-linux`
+            3. Run: `./MeshtasticAI-*-linux`
 
             ### Requirements
-            - A Meshtastic device connected via USB, TCP, or Bluetooth
+            - A Meshtastic device (USB, TCP, or Bluetooth)
             - (Optional) Ollama for AI features
+
+            ---
+            *Copyright © 2025 Ronald McNabb. All rights reserved.*
           files: |
-            MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-linux
-            MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-windows.exe
+            ./artifacts/MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-linux
+            ./artifacts/MeshtasticAI-${{ steps.get_version.outputs.VERSION }}-windows.exe
           draft: false
           prerelease: false
